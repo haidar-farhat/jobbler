@@ -171,6 +171,34 @@
     <h2>Proposed facts — waiting on you</h2>
     <div class="body" id="proposals"><p class="muted">No proposals. Upload a CV to see some.</p></div>
   </section>
+
+  <section class="span2">
+    <h2>Generate documents</h2>
+    <div class="body">
+      <div class="row">
+        <label style="flex:0 0 14rem">Job title
+          <input id="gen-title" value="AI Engineer">
+        </label>
+        <label style="flex:0 0 14rem">Company
+          <input id="gen-company" value="Northwind Analytics">
+        </label>
+      </div>
+      <label style="display:block;margin-top:.7rem;font-size:.72rem;color:var(--muted)">
+        Job description — paste it to drive requirement matching and tailoring
+        <textarea id="gen-desc" rows="5" style="width:100%;padding:.5rem;margin-top:.3rem;
+          border:1px solid var(--edge);border-radius:5px;background:var(--surface);
+          color:var(--ink);font:inherit;font-size:.85rem"></textarea>
+      </label>
+      <div style="display:flex;gap:.6rem;margin-top:.8rem;align-items:center;flex-wrap:wrap">
+        <button class="primary" data-gen="tailored_cv">Tailored CV</button>
+        <button data-gen="cover_letter">Cover letter</button>
+        <button data-gen="master_cv">Master CV</button>
+        <span class="muted" id="gen-status" style="font-size:.8rem"></span>
+      </div>
+      <p id="gen-err" style="color:var(--danger);display:none;font-size:.85rem"></p>
+      <div id="generated" style="margin-top:1rem"></div>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -367,7 +395,7 @@ document.querySelectorAll(".tab").forEach(tab => {
     const profileView = tab.dataset.view === "profile";
     document.querySelector("main").style.display = profileView ? "none" : "grid";
     $("profile-view").style.display = profileView ? "grid" : "none";
-    if (profileView) loadProfile();
+    if (profileView) { loadProfile(); loadGenerated(); }
   };
 });
 
@@ -444,6 +472,76 @@ $("b-upload").onclick = async () => {
     err.style.display = "block";
   }
 };
+
+// --------------------------------------------------------------------------------------
+// Document generation
+// --------------------------------------------------------------------------------------
+
+async function loadGenerated() {
+  let list = [];
+  try { list = await api("/generate"); } catch (e) { return; }
+
+  $("generated").innerHTML = list.length
+    ? "<table><thead><tr><th>Document</th><th>Version</th><th>Match</th><th>Facts</th>"
+      + "<th></th></tr></thead><tbody>"
+      + list.map(d => {
+          const score = d.match_score === null || d.match_score === undefined
+            ? "—" : Math.round(d.match_score * 100) + "%";
+          const missing = (d.match && d.match.missing_required || []).length
+            ? " <span class=\"muted\">missing " + esc((d.match.missing_required).join(", "))
+              + "</span>"
+            : "";
+          return "<tr><td>" + esc(d.kind.replace(/_/g, " "))
+            + (d.job_title ? " <span class=\"muted\">· " + esc(d.job_title) + "</span>" : "")
+            + "</td><td>v" + d.version
+            + "</td><td>" + score + missing
+            + "</td><td class=\"conf\">" + d.facts_used
+            + "</td><td style=\"white-space:nowrap\">"
+            + "<a href=\"/generate/" + d.id + "/preview\" target=\"_blank\">Preview</a>"
+            + (d.has_pdf
+                ? " · <a href=\"/generate/" + d.id + "/pdf\" target=\"_blank\">PDF</a>"
+                : " <span class=\"muted\">(no pdf)</span>")
+            + " · <a href=\"/generate/" + d.id + "/provenance\" target=\"_blank\">Sources</a>"
+            + "</td></tr>";
+        }).join("")
+      + "</tbody></table>"
+    : '<p class="muted">Nothing generated yet.</p>';
+}
+
+document.querySelectorAll("[data-gen]").forEach(button => {
+  button.onclick = async () => {
+    const kind = button.dataset.gen;
+    const err = $("gen-err");
+    err.style.display = "none";
+    $("gen-status").textContent = "Generating…";
+    button.disabled = true;
+    try {
+      const body = await api("/generate", {
+        method: "POST",
+        body: JSON.stringify({
+          kind: kind,
+          job_title: kind === "master_cv" ? null : $("gen-title").value,
+          company: kind === "master_cv" ? null : $("gen-company").value,
+          description: $("gen-desc").value,
+          pdf: true
+        })
+      });
+      $("gen-status").textContent =
+        body.kind.replace(/_/g, " ") + " v" + body.version + " from "
+        + body.facts_used + " facts"
+        + (body.match_score !== null && body.match_score !== undefined
+            ? " · match " + Math.round(body.match_score * 100) + "%" : "")
+        + (body.pdf_error ? " (PDF failed: " + body.pdf_error + ")" : "");
+      await loadGenerated();
+    } catch (e) {
+      $("gen-status").textContent = "";
+      err.textContent = String(e.message || e);
+      err.style.display = "block";
+    } finally {
+      button.disabled = false;
+    }
+  };
+});
 
 // Reattach to whatever is already running, so a refresh does not lose the view.
 (async () => {
