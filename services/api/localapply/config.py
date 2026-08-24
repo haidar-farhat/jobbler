@@ -5,10 +5,10 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 #: jobbler/ -- four levels up from services/api/localapply/config.py.
 REPO_ROOT = Path(__file__).resolve().parents[3]
-
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
