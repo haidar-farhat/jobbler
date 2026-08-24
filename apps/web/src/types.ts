@@ -74,13 +74,20 @@ export interface Health {
   runs: { active: RunSnapshot[]; waiting_approval: RunSnapshot[]; total: number }
 }
 
+export type FactStatus = 'accepted' | 'proposed' | 'rejected' | 'superseded'
+
 export interface ProfileFact {
   id: string
   key: string
   value: string
   category: string
   source: string
-  verified: boolean
+  /** Only 'accepted' facts are ever entered into an application. */
+  status: FactStatus
+  confidence: number
+  evidence: string | null
+  document_id: string | null
+  supersedes_id: string | null
 }
 
 export interface ProfileResponse {

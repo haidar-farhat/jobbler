@@ -44,6 +44,8 @@ export const api = {
     request<AgentEvent[]>(`/agent/runs/${runId}/events/history?after=${after}`),
 
   profile: () => request<ProfileResponse>('/profile'),
-  verifyFact: (factId: string) =>
-    request<unknown>(`/profile/facts/${factId}/verify`, { method: 'POST' }),
+  acceptFact: (factId: string) =>
+    request<unknown>(`/profile/facts/${factId}/accept`, { method: 'POST' }),
+  rejectFact: (factId: string) =>
+    request<unknown>(`/profile/facts/${factId}/reject`, { method: 'POST' }),
 }
