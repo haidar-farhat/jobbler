@@ -1,7 +1,7 @@
 """The professional knowledge base.
 
-Facts are individually approved. Nothing enters an application unless `verified` is true, so
-a future CV import can *propose* facts without ever silently rewriting your identity.
+Facts are individually approved. Nothing reaches an application unless its status is
+`accepted`, so a CV import can *propose* facts without ever silently rewriting your identity.
 """
 
 from __future__ import annotations
@@ -31,7 +31,9 @@ class FactIn(BaseModel):
     category: str = "identity"
     source: str = "manual"
     confidence: float = 1.0
-    verified: bool = False
+    #: Facts added by hand are accepted by definition -- you just typed them. Imported ones
+    #: come in as "proposed" and must be accepted individually.
+    status: str = FactStatus.ACCEPTED.value
 
 
 async def current_profile(session: AsyncSession) -> m.Profile | None:
