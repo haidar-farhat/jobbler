@@ -6,6 +6,8 @@ Facts are individually approved. Nothing reaches an application unless its statu
 
 from __future__ import annotations
 
+import contextlib
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,8 +18,10 @@ from sqlmodel import select
 from ...ai.reasoner import ReasoningContext
 from ...db import models as m
 from ...db.models import utc_now
+from ...config import Settings
 from ...db.session import get_session
 from ...profile.facts import USABLE_STATUSES, FactStatus
+from ..deps import get_app_settings
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 
@@ -144,6 +148,107 @@ async def reject_fact(fact_id: UUID, session: AsyncSession = Depends(get_session
     session.add(fact)
     await session.commit()
     return fact.model_dump(mode="json")
+
+
+class ResetIn(BaseModel):
+    """Destructive and irreversible, so it takes an explicit confirmation phrase rather
+    than a boolean anyone could send by accident."""
+
+    confirm: str
+    #: Keep the uploaded source documents, wiping only the extracted facts. Useful after a
+    #: parser improvement: your CV stays, and you re-import it.
+    keep_documents: bool = False
+
+
+RESET_PHRASE = "DELETE MY DATA"
+
+
+@router.post("/reset")
+async def reset_profile(
+    payload: ResetIn,
+    settings: Settings = Depends(get_app_settings),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Erase profile data so a fresh CV can be imported cleanly.
+
+    Deletes, in foreign-key order: generated documents (and their PDFs on disk), profile
+    facts, then uploaded documents. Job/application/run history is deliberately kept -- it
+    records what the agent did, which is an audit trail, not profile data.
+    """
+    if payload.confirm.strip().upper() != RESET_PHRASE:
+        raise HTTPException(
+            400, f"To confirm, send confirm={RESET_PHRASE!r}. Nothing has been deleted."
+        )
+
+    profile = await current_profile(session)
+    if profile is None:
+        return {"deleted": {}, "note": "No profile to reset."}
+
+    generated = list(
+        (
+            await session.execute(
+                select(m.GeneratedDocument).where(
+                    m.GeneratedDocument.profile_id == profile.id
+                )
+            )
+        ).scalars().all()
+    )
+    removed_files = 0
+    for document in generated:
+        if document.pdf_path:
+            with contextlib.suppress(OSError):
+                Path(document.pdf_path).unlink(missing_ok=True)
+                removed_files += 1
+        await session.delete(document)
+
+    facts = list(
+        (
+            await session.execute(
+                select(m.ProfileFact).where(m.ProfileFact.profile_id == profile.id)
+            )
+        ).scalars().all()
+    )
+    # Facts reference each other through supersedes_id, so clear those links before
+    # deleting or the foreign key blocks the delete.
+    for fact in facts:
+        fact.supersedes_id = None
+        session.add(fact)
+    await session.flush()
+    for fact in facts:
+        await session.delete(fact)
+
+    documents: list = []
+    if not payload.keep_documents:
+        documents = list(
+            (
+                await session.execute(
+                    select(m.Document).where(m.Document.profile_id == profile.id)
+                )
+            ).scalars().all()
+        )
+        for document in documents:
+            if document.stored_path:
+                with contextlib.suppress(OSError):
+                    Path(document.stored_path).unlink(missing_ok=True)
+                    removed_files += 1
+            await session.delete(document)
+
+    await session.commit()
+
+    return {
+        "deleted": {
+            "facts": len(facts),
+            "documents": len(documents),
+            "generated_documents": len(generated),
+            "files_removed": removed_files,
+        },
+        "kept": "Job, application and run history is kept as an audit trail.",
+        "note": (
+            "Upload your CV to start again."
+            if not payload.keep_documents
+            else "Your uploaded CV was kept. Re-import it to rebuild your facts."
+        ),
+    }
 
 
 @router.delete("/facts/{fact_id}", status_code=204)

@@ -22,6 +22,7 @@ from sqlmodel import select
 from ...config import Settings
 from ...db import models as m
 from ...db.session import get_session
+from ...documents.extract import sha256
 from ...documents.generator import DocumentGenerator, UngroundedDocument, assert_grounded
 from ...documents.render import render_html, render_pdf
 from ...profile.facts import FactStatus
@@ -171,6 +172,7 @@ async def generate(
         try:
             await render_pdf(plan, path)
             document.pdf_path = str(path)
+            document.pdf_sha256 = sha256(path.read_bytes())
             session.add(document)
             await session.commit()
         except Exception as exc:  # noqa: BLE001 - HTML is still usable without a PDF

@@ -373,7 +373,7 @@ _ENTRY_BULLET_RE = re.compile(r"^[•·●▪‣∙]\S")
 _SUB_BULLET_RE = re.compile(r"^[•·●▪‣∙*\-–—]\s")
 
 
-def _is_entry_head(line: str, previous_was_sub: bool) -> bool:
+def _is_entry_head(line: str) -> bool:
     """Does this line start a new entry (a role, a degree, a project)?
 
     Four signals, strongest first. Relying on date ranges alone -- the original rule --
@@ -398,13 +398,13 @@ def _is_entry_head(line: str, previous_was_sub: bool) -> bool:
     if DATE_RANGE_RE.search(body):
         return True
 
-    # 4. A short unbulleted line naming a role, right after a run of sub-bullets or at the
-    #    start of a section -- "Software Engineer, NU Scaler".
+    # 4. A short unbulleted line naming a role -- "Software Engineer, NU Scaler". Position
+    #    relative to the previous line turned out not to add anything: an unbulleted role
+    #    line is an entry head wherever it appears in an experience section.
     return bool(
         len(body) <= 90
         and TITLE_HINT_RE.search(body)
         and not body.endswith((".", ":"))
-        and (previous_was_sub or True)
     )
 
 
@@ -416,15 +416,13 @@ def _entries(lines: list[str]) -> list[list[str]]:
     """
     entries: list[list[str]] = []
     current: list[str] = []
-    previous_was_sub = False
 
     for line in lines:
-        if _is_entry_head(line, previous_was_sub) and current:
+        if _is_entry_head(line) and current:
             entries.append(current)
             current = [line]
         else:
             current.append(line)
-        previous_was_sub = bool(_SUB_BULLET_RE.match(line.strip()))
 
     if current:
         entries.append(current)

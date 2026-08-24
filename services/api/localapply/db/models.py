@@ -124,6 +124,10 @@ class GeneratedDocument(SQLModel, table=True):
     #: The rendered HTML, kept so a document can be re-read without re-generating it.
     html: str = ""
     pdf_path: str | None = None
+    #: Hash of the rendered PDF. Uploading a generated CV back into the app creates a
+    #: feedback loop -- the parser treats generated prose as source facts, and quality
+    #: degrades every round. This is how an upload is recognised as our own output.
+    pdf_sha256: str | None = Field(default=None, index=True)
     #: Provenance: the accepted facts this document was built from.
     fact_ids: list = Field(default_factory=list, sa_column=Column(sa.JSON))
     match_score: float | None = None
