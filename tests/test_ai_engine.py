@@ -561,3 +561,41 @@ async def test_an_explicit_choice_is_never_overridden(monkeypatch, settings):
 
     forced_stub = settings.model_copy(update={"reasoner": "stub"})
     assert await _resolve(monkeypatch, forced_stub, healthy=True, models=["x"]) == "stub"
+
+
+# --------------------------------------------------------------------------------------
+# Claim checking against PDF-glued source text
+#
+# Real CVs arrive with words run together ("usingLaravelandMySQL"). The checker could not
+# see the names inside them, so it accused correct rewrites of hallucinating -- rejecting a
+# sentence whose only change was un-gluing the words.
+# --------------------------------------------------------------------------------------
+
+
+GLUED = "Engineered backend services and REST APIs usingLaravelandMySQL."
+
+
+def test_ungluing_a_pdf_artefact_is_not_a_hallucination():
+    report = check_claims(
+        "Engineered backend services and REST APIs using Laravel and MySQL.", [GLUED]
+    )
+    assert report.clean, f"falsely flagged {report.unsupported_skills}"
+
+
+def test_a_compound_name_survives_normalisation():
+    """"MySQL" was being separated into "My SQL" by the very step meant to expose it."""
+    assert check_claims("Used MySQL.", [GLUED]).clean
+
+
+def test_single_letter_skills_do_not_destroy_the_haystack():
+    """The vocabulary contains "R". Matched without boundaries it rewrote every letter r,
+    turning "services" into "se R vices" and making the checker reject everything."""
+    source = "Engineered backend services and REST APIs."
+    assert check_claims("Engineered backend services and REST APIs.", [source]).clean
+
+
+def test_a_real_hallucination_is_still_caught_in_glued_text():
+    """The loosened matching must not have loosened the actual guarantee."""
+    report = check_claims("Deployed Kubernetes and wrote Rust.", [GLUED])
+    assert not report.clean
+    assert set(report.unsupported_skills) >= {"Kubernetes", "Rust"}

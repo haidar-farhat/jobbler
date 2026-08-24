@@ -33,11 +33,17 @@ _SKILL_PATTERNS = [(skill, skill_pattern(skill)) for skill in KNOWN_SKILLS]
 #: "se R vices" -- which destroyed the haystack and made this check reject everything.
 _MIN_LOOSE_LENGTH = 3
 
-_LOOSE_PATTERNS = [
-    (skill, re.compile(re.escape(skill), re.IGNORECASE))
-    for skill in sorted(KNOWN_SKILLS, key=len, reverse=True)
-    if len(skill) >= _MIN_LOOSE_LENGTH
-]
+#: One alternation, longest first. A single pass cannot re-process its own output, whereas
+#: substituting skill by skill does: " MySQL " was then split again by the shorter "SQL"
+#: pattern into " My SQL ", losing the very name the step existed to expose.
+_LOOSE_ALTERNATION = re.compile(
+    "|".join(
+        re.escape(skill)
+        for skill in sorted(KNOWN_SKILLS, key=len, reverse=True)
+        if len(skill) >= _MIN_LOOSE_LENGTH
+    ),
+    re.IGNORECASE,
+)
 
 #: Numbers a model likes to invent: team sizes, percentages, years.
 _QUANTITY_RE = re.compile(
@@ -86,16 +92,16 @@ def _searchable(texts: list[str]) -> str:
     # Loose patterns, deliberately: the strict one used for *detecting* a claim has word
     # boundaries, so it cannot see "Laravel" inside "usingLaravelandMySQL" either -- which is
     # exactly the text we are trying to make searchable.
-    for skill, pattern in _LOOSE_PATTERNS:
-        joined = pattern.sub(f" {skill} ", joined)
-    # Separate any remaining lowercase-to-uppercase run, so "andGemini" is searchable.
-    joined = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", joined)
+    separated = _LOOSE_ALTERNATION.sub(lambda m: f" {m.group(0)} ", joined)
 
-    # Keep the original alongside the normalised form. Substitution can chain -- "MySQL"
-    # becomes " MySQL ", then the shorter "SQL" pattern splits it again into "My SQL" --
-    # so a name can be lost by the very step meant to expose it. Searching both is cheap
-    # and cannot lose anything.
-    return (joined + " \n " + " \n ".join(texts)).casefold()
+    # A generic lowercase-to-uppercase split used to run here too, and it undid the work
+    # above: the freshly separated " MySQL " was split again into " My SQL ", losing the
+    # name this step exists to expose. The alternation already handles every name in the
+    # vocabulary, which is the only thing being searched for.
+    #
+    # Both forms are kept. Searching the original as well means normalisation can never
+    # lose a name, only add ways to find one.
+    return (separated + " \n " + joined).casefold()
 
 
 def check_claims(text: str, supporting: list[str]) -> ClaimReport:
