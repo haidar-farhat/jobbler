@@ -93,16 +93,30 @@ def render_profile(profile: dict[str, str], drafts: dict[str, str]) -> str:
     return "\n".join(lines) or "  (none)"
 
 
-def render_element_table(elements) -> str:
-    """The element table is the model's entire vocabulary for addressing the page."""
-    if not elements:
-        return "(no interactive elements)"
+def render_element_table(elements, handled: set[str] | None = None) -> str:
+    """The element table is the model's entire vocabulary for addressing the page.
+
+    Elements already dealt with are **removed**, not annotated. Listing them alongside a
+    "do not choose these again" instruction does not work: a 7B model handed an already
+    filled "First name" field re-filled it 42 times in a row, until the action budget
+    stopped the run. Constraining the vocabulary is the same technique as ADR 0002, applied
+    to progress rather than to addressing -- the model cannot pick what it cannot see.
+    """
+    handled = handled or set()
     lines = ["ref    | role       | required | name"]
+    shown = 0
     for element in elements:
         if not element.visible:
+            continue
+        # Already dealt with: removed, not annotated. See the docstring.
+        if " ".join(element.name.split()).strip().lower() in handled:
             continue
         flag = "yes" if element.required else "no"
         lines.append(
             f"{element.ref:<6} | {element.role.value:<10} | {flag:<8} | {element.name[:70]}"
         )
+        shown += 1
+
+    if not shown:
+        return "(nothing left to interact with -- choose submit or finish)"
     return "\n".join(lines)

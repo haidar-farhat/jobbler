@@ -234,7 +234,7 @@ class LLMReasoner(Reasoner):
             f"PAGE: {observation.page_kind.value} at {observation.url}",
             f"TITLE: {observation.title}",
             "ELEMENTS (address these by ref, and only these):",
-            render_element_table(observation.elements),
+            render_element_table(observation.elements, context.handled_fields),
         ]
 
         # Without this the model has to invent values, and it does -- "JohnDoe" typed into a
@@ -246,12 +246,6 @@ class LLMReasoner(Reasoner):
             parts.append(
                 "CANDIDATE DETAILS: none available. Do not invent any value; "
                 "choose ask_user if a field needs one."
-            )
-
-        if context.handled_fields:
-            parts.append(
-                "ALREADY DEALT WITH (do not choose these again): "
-                + ", ".join(sorted(context.handled_fields))
             )
 
         parts += [

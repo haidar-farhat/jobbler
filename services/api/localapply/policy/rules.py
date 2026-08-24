@@ -51,6 +51,9 @@ class RunContext:
     #: Normalised values drawn from accepted profile facts and drafts. Empty means "we do
     #: not know", and R014 stays silent rather than blocking every field.
     known_values: set[str] = field(default_factory=set)
+    #: Signatures of fill actions already executed this run, so the same field cannot be
+    #: filled with the same value forever. See R015.
+    executed_signatures: set[str] = field(default_factory=set)
 
     def grant(self, decision: Decision) -> None:
         self.granted_approvals.add(decision_fingerprint(decision))
@@ -162,6 +165,44 @@ def r006_element_unusable(d: Decision, o: Observation, c: RunContext) -> PolicyV
     return None
 
 
+def _normalise_value(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def action_signature(decision: Decision, observation: Observation) -> str:
+    """Identity of a fill action, keyed by *element name* rather than ref.
+
+    Refs are rebuilt every observation, so a ref-based key would not recognise the same
+    field across iterations -- which is exactly the case that matters.
+    """
+    element = observation.element(decision.target_ref) if decision.target_ref else None
+    name = " ".join((element.name if element else decision.target_ref or "").split()).lower()
+    return f"{decision.action.value}|{name}|{_normalise_value(decision.value or '')}"
+
+
+def r015_already_done(d: Decision, o: Observation, c: RunContext) -> PolicyVerdict | None:
+    """Refuse to fill the same field with the same value twice.
+
+    The loop backstop. A real 7B model, told in the prompt not to re-pick a completed field,
+    re-picked it 42 times until the action budget stopped the run. The prompt now hides
+    completed fields, which fixes the cause; this rule means a future prompt regression
+    degrades to "stops early" rather than "burns 120 actions on one field".
+
+    Deliberately limited to fill actions. A repeated click can be legitimate -- "Next" on a
+    multi-page form is the same element name each time.
+    """
+    if d.action not in {ActionType.TYPE, ActionType.SELECT, ActionType.UPLOAD}:
+        return None
+    if action_signature(d, o) in c.executed_signatures:
+        element = o.element(d.target_ref) if d.target_ref else None
+        name = element.name if element else d.target_ref
+        return _deny(
+            "R015_ALREADY_DONE",
+            f"{name!r} was already filled with this value in this run.",
+        )
+    return None
+
+
 DENY_RULES = [
     r001_kill_switch,
     r002_unknown_ref,
@@ -169,6 +210,7 @@ DENY_RULES = [
     r004_action_budget,
     r005_never_autofill,
     r006_element_unusable,
+    r015_already_done,
 ]
 
 
@@ -208,10 +250,6 @@ def r012_low_confidence(d: Decision, o: Observation, c: RunContext) -> PolicyVer
             f"Confidence {d.confidence:.2f} is below the {c.min_confidence:.2f} threshold.",
         )
     return None
-
-
-def _normalise_value(value: str) -> str:
-    return " ".join(value.split()).casefold()
 
 
 def r014_value_not_from_profile(

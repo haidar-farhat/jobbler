@@ -42,7 +42,7 @@ from ..events.bus import EventBus
 from ..policy.capabilities import capabilities_for
 from ..policy.engine import PolicyEngine
 from ..policy.field_classifier import FieldClass, classify
-from ..policy.rules import RunContext, decision_fingerprint
+from ..policy.rules import RunContext, action_signature, decision_fingerprint
 from ..safety import KILL_SWITCH, AutomationHalted
 from .state_machine import ApplicationState, InvalidTransition, transition
 
@@ -476,6 +476,7 @@ class RunManager:
         assert handle.session is not None
         result = await self._executor.execute(decision, observation, handle.session)
         handle.policy.actions_executed += 1
+        handle.policy.executed_signatures.add(action_signature(decision, observation))
 
         await self._record_action(handle, observation, decision, verdict.rule_id, result)
         await self._bus.emit(
