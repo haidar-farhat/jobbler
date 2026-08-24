@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+import traceback
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -45,6 +47,8 @@ from ..policy.field_classifier import FieldClass, classify
 from ..policy.rules import RunContext, action_signature, decision_fingerprint
 from ..safety import KILL_SWITCH, AutomationHalted
 from .state_machine import ApplicationState, InvalidTransition, transition
+
+logger = logging.getLogger(__name__)
 
 S = ApplicationState
 
@@ -388,8 +392,18 @@ class RunManager:
             await self._bus.emit(handle.run_id, EventType.KILL_SWITCH, str(exc))
             await self._finish(handle, "stopped", str(exc))
         except Exception as exc:  # noqa: BLE001 - the loop must never die silently
-            handle.error = f"{exc.__class__.__name__}: {exc}"
-            await self._bus.emit(handle.run_id, EventType.RUN_FAILED, handle.error)
+            # Include the traceback. An earlier version emitted only "ClassName: str(exc)",
+            # which for a bare `raise SomeError` renders as "SomeError:" and says nothing
+            # about where it came from.
+            trace = "".join(traceback.format_exception(exc))
+            handle.error = f"{exc.__class__.__name__}: {exc}".rstrip(": ")
+            logger.exception("run %s failed", handle.run_id)
+            await self._bus.emit(
+                handle.run_id,
+                EventType.RUN_FAILED,
+                handle.error,
+                payload={"traceback": trace[-4000:]},
+            )
             await self._finish(handle, "failed", handle.error)
 
     async def _observe(self, handle: RunHandle) -> Observation:

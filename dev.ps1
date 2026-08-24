@@ -92,7 +92,13 @@ switch ($Task) {
     'up'      { docker compose -f $Compose up -d; Wait-Postgres }
     'down'    { docker compose -f $Compose down }
 
-    'api'     { Assert-Venv; Invoke-Py (@('-m','uvicorn','localapply.main:app','--reload','--port','8000') + $Rest) }
+    'api' {
+        # NOT --reload. On Windows uvicorn's reload mode runs on a SelectorEventLoop, which
+        # cannot spawn subprocesses, so Playwright cannot start its driver and every run
+        # fails with a bare NotImplementedError. Restart manually after code changes.
+        Assert-Venv
+        Invoke-Py (@('-m','uvicorn','localapply.main:app','--port','8000') + $Rest)
+    }
     'seed'    { Assert-Venv; Invoke-Py @('scripts\dev_bootstrap.py') }
     'migrate' { Assert-Venv; Invoke-Py (@('-m','alembic') + $(if ($Rest) { $Rest } else { @('upgrade','head') })) }
 

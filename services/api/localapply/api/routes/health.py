@@ -36,6 +36,24 @@ async def _redis_ok(settings: Settings) -> tuple[bool, str | None]:
         return False, f"{exc.__class__.__name__}: {exc}"
 
 
+def _browser_status(runs, settings: Settings) -> dict:
+    """Report an unusable event loop here rather than letting a run die on it."""
+    from ...browser.session import BrowserManager
+
+    try:
+        problem = BrowserManager.check_event_loop()
+    except RuntimeError:
+        problem = None  # no running loop to inspect
+
+    return {
+        "ok": problem is None,
+        "sessions": runs.browser.session_count,
+        "max_sessions": settings.max_browser_sessions,
+        "headless": settings.headless,
+        **({"error": problem} if problem else {}),
+    }
+
+
 async def _ai_status(settings: Settings, model_router) -> dict:
     """Report the AI engine honestly, including which model is actually resident.
 
@@ -87,11 +105,7 @@ async def health(
         "subsystems": {
             "database": {"ok": db_ok, "error": db_error},
             "redis": {"ok": redis_ok, "error": redis_error},
-            "browser": {
-                "ok": True,
-                "sessions": runs.browser.session_count,
-                "max_sessions": settings.max_browser_sessions,
-            },
+            "browser": _browser_status(runs, settings),
             "ai": await _ai_status(settings, model_router),
         },
         "safety": {

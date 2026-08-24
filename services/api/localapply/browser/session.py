@@ -9,7 +9,9 @@ rather than resolving to whatever element now occupies that position.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import sys
 from uuid import UUID, uuid4
 
 from playwright.async_api import Browser, BrowserContext, Locator, Page, async_playwright
@@ -71,9 +73,34 @@ class BrowserManager:
         self._contexts: dict[UUID, BrowserContext] = {}
         self._sessions: dict[UUID, BrowserSession] = {}
 
+    @staticmethod
+    def check_event_loop() -> str | None:
+        """Return a problem description if this loop cannot launch a browser.
+
+        On Windows, Playwright spawns its Node driver with
+        `asyncio.create_subprocess_exec`, which only works on a ProactorEventLoop. uvicorn
+        picks a SelectorEventLoop whenever `--reload` is on -- its loop factory takes a
+        `use_subprocess` flag and, confusingly, the True branch returns the loop that cannot
+        do subprocesses. The result was a bare `NotImplementedError` thrown from deep inside
+        Playwright on the first run, which explained nothing.
+        """
+        if sys.platform != "win32":
+            return None
+        loop = asyncio.get_running_loop()
+        if isinstance(loop, asyncio.ProactorEventLoop):
+            return None
+        return (
+            f"The server is running on {type(loop).__name__}, which cannot start a browser "
+            "on Windows. This happens when uvicorn is started with --reload. Restart "
+            r"without it:  .\dev.ps1 api"
+        )
+
     async def start(self) -> None:
         if self._browser is not None:
             return
+        problem = self.check_event_loop()
+        if problem:
+            raise RuntimeError(problem)
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(headless=self._settings.headless)
 
