@@ -16,6 +16,7 @@ Control flow worth knowing:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -191,8 +192,10 @@ class RunManager:
         if handle.pending is not None:
             handle.pending.approved = False
             handle.pending.event.set()
-        if handle.task is not None:
+        if handle.task is not None and not handle.task.done():
             handle.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await handle.task
         await self._finish(handle, "stopped", reason)
 
     async def stop_all(self, reason: str = "Kill switch engaged") -> None:
@@ -340,7 +343,10 @@ class RunManager:
                     return
 
         except asyncio.CancelledError:
-            await self._close_session(handle)
+            # Awaiting during cancellation can itself be interrupted; cleanup is best-effort
+            # here because `stop()` closes the session on the caller's side too.
+            with contextlib.suppress(Exception):
+                await self._close_session(handle)
             raise
         except AutomationHalted as exc:
             await self._bus.emit(handle.run_id, EventType.KILL_SWITCH, str(exc))

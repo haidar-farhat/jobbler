@@ -115,7 +115,13 @@ class BrowserManager:
         return self._sessions.get(session_id)
 
     async def close_session(self, session_id: UUID) -> None:
+        """Idempotent. Two paths race to close a session on shutdown (the run loop's
+        cancellation handler and `stop_all`), and neither should raise."""
         self._sessions.pop(session_id, None)
         context = self._contexts.pop(session_id, None)
-        if context is not None:
+        if context is None:
+            return
+        try:
             await context.close()
+        except Exception:  # noqa: BLE001 - the browser may already be gone
+            pass
