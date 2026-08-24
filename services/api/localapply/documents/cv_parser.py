@@ -360,9 +360,18 @@ def _extract_skills(text: str, sections: dict[str, list[str]]) -> list[Extracted
                                   _line_for(text, match.group(0)))
                 )
 
-    # Hard ceiling on proposals. A CV cannot show more than a dozen or so usefully, and a
-    # review queue of eighty skill cards is not a review anyone completes.
-    return facts[:MAX_SKILL_FACTS]
+    # Filter BEFORE capping. Capping first let an early "AI ENGINEERING" section fill all
+    # thirty slots with phrases ("RAG concepts", "AI orchestration"), which the CV then
+    # discarded as unpresentable -- so a CV listing Python, TypeScript, React, Laravel,
+    # MySQL and Docker rendered a skills row containing only "Python".
+    from .taxonomy import is_presentable
+
+    real = [f for f in facts if is_presentable(f.value)]
+    dropped = [f for f in facts if not is_presentable(f.value)]
+
+    # Keep a few of the descriptive ones at the end: they are genuine facts, useful for
+    # matching and for a cover letter, just not CV skill entries.
+    return (real + dropped)[:MAX_SKILL_FACTS]
 
 
 #: A top-level bullet glued straight to its text -- "•Full-Stack Developer" -- which is how
