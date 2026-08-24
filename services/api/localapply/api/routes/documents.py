@@ -83,7 +83,8 @@ async def upload_document(
     settings.ensure_dirs()
     store = settings.data_dir / "documents"
     store.mkdir(parents=True, exist_ok=True)
-    suffix = ("." + (file.filename or "").rsplit(".", 1)[-1]) if "." in (file.filename or "") else ""
+    name = file.filename or ""
+    suffix = ("." + name.rsplit(".", 1)[-1]) if "." in name else ""
     stored_path = store / f"{digest[:16]}{suffix}"
     stored_path.write_bytes(data)
 
