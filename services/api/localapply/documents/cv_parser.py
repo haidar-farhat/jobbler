@@ -109,6 +109,17 @@ TITLE_HINT_RE = re.compile(
 )
 
 
+#: Bullet glyphs and list markers that PDF and DOCX extraction leaves in the text. Keeping
+#: them turns a CV line into "•Full-Stack Developer, Carepool" on the rendered document.
+BULLET_CHARS = "•·●▪◦‣∙*-–—•▪●"
+
+
+def clean_line(text: str) -> str:
+    """Strip list markers and collapse whitespace, without touching real punctuation."""
+    cleaned = text.strip().lstrip(BULLET_CHARS).strip()
+    return re.sub(r"\s+", " ", cleaned)
+
+
 @dataclass
 class ExtractedFact:
     key: str
@@ -116,6 +127,9 @@ class ExtractedFact:
     category: str
     confidence: float = 0.8
     evidence: str = ""
+    #: Structured parts, for entries that have them: role, organisation, dates, bullets.
+    #: The CV template renders these properly instead of printing one long joined line.
+    detail: dict = field(default_factory=dict)
 
 
 @dataclass
