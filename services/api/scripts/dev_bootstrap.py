@@ -6,7 +6,7 @@ Idempotent: safe to run more than once.
 
 CV parsing lands in Phase 2. Until then the profile is seeded from this file, which is
 honest about where the facts came from -- every seeded fact carries source="manual" and
-verified=True, and only verified facts are ever used in an application.
+status="accepted", and only accepted facts are ever used in an application.
 """
 
 from __future__ import annotations
@@ -22,6 +22,9 @@ from sqlmodel import select  # noqa: E402
 from localapply.config import get_settings  # noqa: E402
 from localapply.db import models as m  # noqa: E402
 from localapply.db.session import create_all, dispose_engine, init_engine, session_factory  # noqa: E402
+from localapply.profile.facts import FactStatus  # noqa: E402
+
+ACCEPTED = FactStatus.ACCEPTED.value
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SAMPLE_CV = REPO_ROOT / "evaluation" / "fixtures" / "sample-cv.txt"
@@ -90,7 +93,7 @@ async def main() -> None:
                     value=value,
                     category="identity",
                     source="manual",
-                    verified=True,
+                    status=ACCEPTED,
                 )
             )
             added += 1
@@ -105,7 +108,7 @@ async def main() -> None:
                     value=value,
                     category="answer",
                     source="manual",
-                    verified=True,
+                    status=ACCEPTED,
                 )
             )
             added += 1

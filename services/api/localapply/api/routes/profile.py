@@ -15,7 +15,9 @@ from sqlmodel import select
 
 from ...ai.reasoner import ReasoningContext
 from ...db import models as m
+from ...db.models import utc_now
 from ...db.session import get_session
+from ...profile.facts import USABLE_STATUSES, FactStatus
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 
@@ -42,7 +44,10 @@ async def current_profile(session: AsyncSession) -> m.Profile | None:
 
 
 async def load_reasoning_context(session: AsyncSession, goal: str) -> ReasoningContext:
-    """Build the reasoner's view of the user from verified facts only.
+    """Build the reasoner's view of the user from accepted facts only.
+
+    This is the enforcement point for the whole knowledge base: a proposed, rejected, or
+    superseded fact is invisible here, so it can never be typed into an application.
 
     Facts in the `answer` category become *drafts* for REVIEW_REQUIRED fields: proposals the
     human confirms, never values entered blind.
@@ -54,7 +59,7 @@ async def load_reasoning_context(session: AsyncSession, goal: str) -> ReasoningC
     result = await session.execute(
         select(m.ProfileFact).where(
             m.ProfileFact.profile_id == profile.id,
-            m.ProfileFact.verified == True,  # noqa: E712 - SQL comparison, not a Python bool
+            m.ProfileFact.status.in_(USABLE_STATUSES),
         )
     )
     facts = list(result.scalars().all())
@@ -103,12 +108,39 @@ async def add_fact(payload: FactIn, session: AsyncSession = Depends(get_session)
     return fact.model_dump(mode="json")
 
 
-@router.post("/facts/{fact_id}/verify")
-async def verify_fact(fact_id: UUID, session: AsyncSession = Depends(get_session)) -> dict:
+@router.post("/facts/{fact_id}/accept")
+async def accept_fact(fact_id: UUID, session: AsyncSession = Depends(get_session)) -> dict:
+    """Accept a fact, superseding whatever it replaces.
+
+    Superseding happens here rather than at import time so the old value survives until you
+    actually say yes -- declining a proposal leaves the profile exactly as it was.
+    """
     fact = await session.get(m.ProfileFact, fact_id)
     if fact is None:
         raise HTTPException(404, "No such fact.")
-    fact.verified = True
+
+    if fact.supersedes_id is not None:
+        previous = await session.get(m.ProfileFact, fact.supersedes_id)
+        if previous is not None and previous.status == FactStatus.ACCEPTED.value:
+            previous.status = FactStatus.SUPERSEDED.value
+            previous.resolved_at = utc_now()
+            session.add(previous)
+
+    fact.status = FactStatus.ACCEPTED.value
+    fact.resolved_at = utc_now()
+    session.add(fact)
+    await session.commit()
+    return fact.model_dump(mode="json")
+
+
+@router.post("/facts/{fact_id}/reject")
+async def reject_fact(fact_id: UUID, session: AsyncSession = Depends(get_session)) -> dict:
+    """Decline a proposal. Remembered, so the same value is not proposed at you again."""
+    fact = await session.get(m.ProfileFact, fact_id)
+    if fact is None:
+        raise HTTPException(404, "No such fact.")
+    fact.status = FactStatus.REJECTED.value
+    fact.resolved_at = utc_now()
     session.add(fact)
     await session.commit()
     return fact.model_dump(mode="json")

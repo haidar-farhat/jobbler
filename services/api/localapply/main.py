@@ -18,7 +18,7 @@ from .ai.providers.ollama import OllamaProvider
 from .ai.providers.stub import StubProvider
 from .ai.reasoner import LLMReasoner, StubReasoner
 from .ai.router import ModelRouter
-from .api.routes import agent, approvals, events, health, profile
+from .api.routes import agent, approvals, documents, events, health, profile
 from .browser.executor import BrowserExecutor
 from .browser.observer import Observer
 from .browser.session import BrowserManager
@@ -90,6 +90,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(profile.router)
+    app.include_router(documents.router)
     app.include_router(agent.router)
     app.include_router(approvals.router)
     app.include_router(events.router)
