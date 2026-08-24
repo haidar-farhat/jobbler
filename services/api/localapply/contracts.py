@@ -138,13 +138,15 @@ MUTATING_ACTIONS: frozenset[ActionType] = frozenset(
     }
 )
 
-#: Actions that must name a target element.
+#: Actions that must name a target element. SUBMIT is included so that the submit button is
+#: itself ref-validated -- there is no "submit the form somehow" action.
 TARGETED_ACTIONS: frozenset[ActionType] = frozenset(
     {
         ActionType.CLICK,
         ActionType.TYPE,
         ActionType.SELECT,
         ActionType.UPLOAD,
+        ActionType.SUBMIT,
     }
 )
 
