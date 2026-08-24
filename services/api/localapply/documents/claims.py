@@ -25,6 +25,20 @@ from .cv_parser import KNOWN_SKILLS, skill_pattern
 
 _SKILL_PATTERNS = [(skill, skill_pattern(skill)) for skill in KNOWN_SKILLS]
 
+#: Boundary-free patterns, used only to normalise the *source* text for searching. Longest
+#: first so "React Native" is separated before "React".
+#:
+#: Skills shorter than three characters are excluded. The vocabulary contains "R" and "Go",
+#: and a boundary-free "R" rewrote every letter r in the text -- "services" became
+#: "se R vices" -- which destroyed the haystack and made this check reject everything.
+_MIN_LOOSE_LENGTH = 3
+
+_LOOSE_PATTERNS = [
+    (skill, re.compile(re.escape(skill), re.IGNORECASE))
+    for skill in sorted(KNOWN_SKILLS, key=len, reverse=True)
+    if len(skill) >= _MIN_LOOSE_LENGTH
+]
+
 #: Numbers a model likes to invent: team sizes, percentages, years.
 _QUANTITY_RE = re.compile(
     r"\b(\d+)\s*(?:\+|plus)?\s*"
@@ -76,7 +90,12 @@ def _searchable(texts: list[str]) -> str:
         joined = pattern.sub(f" {skill} ", joined)
     # Separate any remaining lowercase-to-uppercase run, so "andGemini" is searchable.
     joined = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", joined)
-    return joined.casefold()
+
+    # Keep the original alongside the normalised form. Substitution can chain -- "MySQL"
+    # becomes " MySQL ", then the shorter "SQL" pattern splits it again into "My SQL" --
+    # so a name can be lost by the very step meant to expose it. Searching both is cheap
+    # and cannot lose anything.
+    return (joined + " \n " + " \n ".join(texts)).casefold()
 
 
 def check_claims(text: str, supporting: list[str]) -> ClaimReport:
