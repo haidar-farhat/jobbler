@@ -257,20 +257,23 @@ def check_ai_engine(root: Path) -> None:
                     reasoner = line.split("=", 1)[1].strip().lower()
                     break
 
-    if reasoner != "ollama":
-        ok("Reasoner: scripted (no model needed)")
+    if reasoner == "stub":
+        ok("Reasoner: scripted (forced by LA_REASONER=stub)")
         return
 
+    # "auto" (the default) and "ollama" both want a model, so both check for one.
     base = os.environ.get("LA_OLLAMA_BASE_URL", "http://localhost:11434")
     tags = http_json(f"{base}/api/tags", timeout=4.0)
     if tags is None:
-        warn(f"LA_REASONER=ollama but nothing is answering at {base}.")
-        warn("Start Ollama, or set LA_REASONER=stub. Starting anyway.")
+        if reasoner == "ollama":
+            warn(f"LA_REASONER=ollama but nothing is answering at {base}. Start Ollama.")
+        else:
+            print(f"      {dim(f'No Ollama at {base}; using the scripted reasoner.')}")
         return
 
     models = [m.get("name", "") for m in tags.get("models", [])]
     if not models:
-        warn("Ollama is running but has no models. Import one, or set LA_REASONER=stub.")
+        warn("Ollama is running but has no models installed. Using the scripted reasoner.")
         return
     ok(f"Ollama ready: {', '.join(models[:3])}")
 
