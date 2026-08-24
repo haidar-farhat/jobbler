@@ -85,7 +85,21 @@ async def main() -> None:
         result = await session.execute(
             select(m.ProfileFact).where(m.ProfileFact.profile_id == profile.id)
         )
-        known = {f.key for f in result.scalars().all()}
+        existing_facts = list(result.scalars().all())
+        known = {f.key for f in existing_facts}
+
+        # Never seed demo values over a real profile. These are placeholders -- an example
+        # LinkedIn URL, example.com, a fixture CV path -- and the launcher runs this on
+        # every start. They reached a real generated CV, which is exactly the failure this
+        # guard exists to prevent.
+        imported = [f for f in existing_facts if f.source != "manual"]
+        if imported:
+            print(
+                f"Profile already has {len(imported)} imported fact(s); "
+                "skipping demo seed so placeholders cannot reach your CV."
+            )
+            await dispose_engine()
+            return
 
         added = 0
         for key, value in IDENTITY_FACTS:
