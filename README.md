@@ -52,8 +52,11 @@ Nothing on this list is installed by default on Windows. Steps 4–5 need a rebo
 1. **Disable the Windows Store Python aliases** — Settings → Apps → Advanced app settings →
    App execution aliases → turn off `python.exe` and `python3.exe`. The default `python` on
    PATH is a Store stub, not an interpreter.
-2. **Python 3.12** from python.org, with "Add to PATH" ticked.
-3. **Node 20 LTS**, then `corepack enable`.
+2. **Python 3.12 or newer** from python.org, with "Add to PATH" ticked.
+   Verified on 3.14.7 — every dependency, including `asyncpg` and `greenlet`, has cp314
+   wheels.
+3. **Node 20 LTS**, then `corepack enable`. Needed *only* for the dashboard in `apps/web`;
+   the API, the agent, and the whole test suite run without it.
 4. `wsl --install` from an admin PowerShell, then **reboot**.
 5. **Docker Desktop** with the WSL2 backend.
 
@@ -127,6 +130,28 @@ What is covered:
 | `test_state_machine.py` | `SUBMITTING` is reachable from `REVIEW_REQUIRED` and nowhere else |
 | `test_model_router.py` | Reasoning and vision models are never co-resident on the 8 GB card |
 | `test_browser.py` | Ref enumeration, stale-ref invalidation, kill switch, dry-run submit |
+| `test_loop_integration.py` | `agent_events` survives the run and can replay every ref from the stored element table |
+
+## Verified
+
+Run end to end on 2026-08-24 against Python 3.14.7, Postgres 16, Redis 7, Chromium 1234:
+
+```
+117 passed in 41.43s
+```
+
+A live run driven through the HTTP API, approvals submitted with `source=phone`:
+
+| | |
+|---|---|
+| Safe fields filled uninterrupted | 10 (`R099_DEFAULT_ALLOW`) |
+| Stops for approval | 4 fields + the submit (`R011`, `R010`) |
+| `NEVER_AUTOFILL` fields touched | **0** |
+| Submit | `simulated=true`, `R000_HUMAN_APPROVED` |
+| Events persisted | 85, seq 1–85, no gaps |
+
+The salary gate was approved with an *edited* value; the executed action recorded the edit,
+not the draft — an approval authorises exactly what was on screen.
 
 ## Hardware note
 
