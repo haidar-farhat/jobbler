@@ -68,6 +68,20 @@
   .rule{float:right;font-family:ui-monospace,monospace;font-size:.65rem;color:var(--muted)}
   .muted{color:var(--muted)}
   img{width:100%;border:1px solid var(--edge);border-radius:6px;display:block}
+  .tab{border:0;border-bottom:2px solid transparent;border-radius:0;padding:.35rem .8rem;
+       color:var(--muted);font-size:.85rem}
+  .tab.on{border-bottom-color:var(--accent);color:var(--ink)}
+  .tab:hover{background:transparent;color:var(--ink)}
+  #profile-view{display:none;grid-template-columns:1fr 1fr;gap:1rem;padding:1rem;
+                align-content:start}
+  table{width:100%;border-collapse:collapse;font-size:.85rem}
+  td,th{text-align:left;padding:.35rem .5rem;border-bottom:1px solid rgba(38,45,54,.5)}
+  th{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .pill{font-size:.65rem;padding:.1rem .4rem;border-radius:3px}
+  .pill.new{background:rgba(88,166,255,.15);color:var(--accent)}
+  .pill.conflict{background:rgba(210,153,34,.15);color:var(--warn)}
+  .conf{font-family:ui-monospace,monospace;font-size:.7rem;color:var(--muted)}
+  .drop{border:1px dashed var(--edge);border-radius:8px;padding:1.2rem;text-align:center}
   @media(max-width:900px){main{grid-template-columns:1fr;grid-template-rows:auto auto auto 16rem;height:auto}}
 </style>
 </head>
@@ -79,6 +93,10 @@
   <span class="light"><span class="dot" id="d-browser"></span>browser <b id="t-sessions" style="color:var(--ink)"></b></span>
   <span class="light"><span class="dot" id="d-ai"></span>ai <b id="t-reasoner" style="color:var(--ink)"></b></span>
   <span id="t-mode"></span>
+  <nav style="display:flex;gap:.2rem;margin-left:1rem">
+    <button class="tab on" data-view="mission">Mission Control</button>
+    <button class="tab" data-view="profile">Profile &amp; CV</button>
+  </nav>
   <span style="margin-left:auto;display:flex;gap:.6rem;align-items:center">
     <span class="muted" id="t-killreason" style="font-size:.75rem"></span>
     <button class="stop" id="b-kill">STOP ALL AUTOMATION</button>
@@ -124,6 +142,36 @@
     <div class="body" id="log"><p class="muted">Start a run to watch the agent work.</p></div>
   </section>
 </main>
+
+<div id="profile-view">
+  <section>
+    <h2>Import a CV</h2>
+    <div class="body">
+      <div class="drop">
+        <input type="file" id="cv-file" accept=".pdf,.docx,.txt,.md">
+        <p class="muted" style="margin:.6rem 0 0;font-size:.8rem">
+          PDF, .docx or plain text. Nothing is added to your profile automatically —
+          everything found comes back as a proposal for you to accept or decline.
+        </p>
+      </div>
+      <div style="display:flex;gap:.6rem;margin-top:.9rem;align-items:center">
+        <button class="primary" id="b-upload">Upload &amp; extract</button>
+        <span class="muted" id="upload-status" style="font-size:.8rem"></span>
+      </div>
+      <p id="upload-err" style="color:var(--danger);display:none;font-size:.85rem"></p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Accepted facts — what the agent may use</h2>
+    <div class="body" id="accepted"><p class="muted">Loading…</p></div>
+  </section>
+
+  <section class="span2">
+    <h2>Proposed facts — waiting on you</h2>
+    <div class="body" id="proposals"><p class="muted">No proposals. Upload a CV to see some.</p></div>
+  </section>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -307,6 +355,94 @@ $("b-kill").onclick = async () => {
 $("b-rearm").onclick = async () => {
   await api("/agent/kill-switch/reset", { method: "POST" });
   poll();
+};
+
+// --------------------------------------------------------------------------------------
+// Profile & CV
+// --------------------------------------------------------------------------------------
+
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.onclick = () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t === tab));
+    const profileView = tab.dataset.view === "profile";
+    document.querySelector("main").style.display = profileView ? "none" : "grid";
+    $("profile-view").style.display = profileView ? "grid" : "none";
+    if (profileView) loadProfile();
+  };
+});
+
+async function loadProfile() {
+  let data;
+  try { data = await api("/profile"); } catch (e) { return; }
+
+  const accepted = data.facts.filter(f => f.status === "accepted");
+  const proposed = data.facts.filter(f => f.status === "proposed");
+
+  const byCategory = {};
+  accepted.forEach(f => { (byCategory[f.category] = byCategory[f.category] || []).push(f); });
+
+  $("accepted").innerHTML = accepted.length
+    ? Object.keys(byCategory).sort().map(cat =>
+        "<h3 style=\"font-size:.8rem;margin:.9rem 0 .3rem;color:var(--muted);"
+        + "text-transform:uppercase;letter-spacing:.04em\">" + esc(cat)
+        + " (" + byCategory[cat].length + ")</h3><table><tbody>"
+        + byCategory[cat].map(f =>
+            "<tr><td class=\"muted\" style=\"width:11rem\">" + esc(f.key) + "</td><td>"
+            + esc(f.value) + "</td></tr>").join("")
+        + "</tbody></table>").join("")
+    : '<p class="muted">No accepted facts yet. Upload a CV, or add them by hand.</p>';
+
+  $("proposals").innerHTML = proposed.length
+    ? "<table><thead><tr><th>What</th><th>Value</th><th>Confidence</th><th>Source line</th>"
+      + "<th></th></tr></thead><tbody>"
+      + proposed.map(f =>
+          "<tr><td><span class=\"pill " + (f.supersedes_id ? "conflict" : "new") + "\">"
+          + (f.supersedes_id ? "replaces" : "new") + "</span> "
+          + esc(f.category) + " · " + esc(f.key)
+          + "</td><td>" + esc(f.value)
+          + "</td><td class=\"conf\">" + f.confidence.toFixed(2)
+          + "</td><td class=\"muted\" style=\"font-size:.75rem\">" + esc(f.evidence || "")
+          + "</td><td style=\"white-space:nowrap\">"
+          + "<button class=\"ok\" data-accept=\"" + f.id + "\">Accept</button> "
+          + "<button data-decline=\"" + f.id + "\">Decline</button></td></tr>").join("")
+      + "</tbody></table>"
+    : '<p class="muted">Nothing waiting. Everything found has been decided on.</p>';
+}
+
+$("proposals").addEventListener("click", async ev => {
+  const id = ev.target.dataset.accept || ev.target.dataset.decline;
+  if (!id) return;
+  const action = ev.target.dataset.accept ? "accept" : "reject";
+  ev.target.disabled = true;
+  try { await api("/profile/facts/" + id + "/" + action, { method: "POST" }); }
+  catch (e) { /* surfaced by the reload */ }
+  await loadProfile();
+});
+
+$("b-upload").onclick = async () => {
+  const input = $("cv-file");
+  const err = $("upload-err");
+  err.style.display = "none";
+  if (!input.files.length) { $("upload-status").textContent = "Choose a file first."; return; }
+
+  const form = new FormData();
+  form.append("file", input.files[0]);
+  $("upload-status").textContent = "Extracting…";
+  try {
+    // No Content-Type header: the browser must set the multipart boundary itself.
+    const r = await fetch("/documents", { method: "POST", body: form });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.detail || r.statusText);
+    $("upload-status").textContent = body.already_imported
+      ? "Already imported — showing the earlier proposals."
+      : body.pending_facts + " facts proposed from " + body.document.filename
+        + " (" + body.document.text_chars + " characters read).";
+    await loadProfile();
+  } catch (e) {
+    $("upload-status").textContent = "";
+    err.textContent = String(e.message || e);
+    err.style.display = "block";
+  }
 };
 
 // Reattach to whatever is already running, so a refresh does not lose the view.

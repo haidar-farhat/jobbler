@@ -17,6 +17,9 @@ dependencies = [
     "httpx>=0.28",
     "sse-starlette>=2.1",
     "python-multipart>=0.0.17",
+    # CV import (Phase 2). Both are pure-Python with cp314 wheels.
+    "pypdf>=5.1",
+    "python-docx>=1.1",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +27,7 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "aiosqlite>=0.20",
+    "httpx>=0.28",  # ASGI transport for API tests
     "ruff>=0.8",
     "mypy>=1.13",
 ]
