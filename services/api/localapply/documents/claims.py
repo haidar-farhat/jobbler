@@ -58,13 +58,31 @@ class ClaimReport:
         return "; ".join(parts)
 
 
+def _searchable(texts: list[str]) -> str:
+    """Normalise the source facts for *matching only*.
+
+    PDF extraction glues words together -- "usingLaravelandMySQL" -- which hid Laravel and
+    MySQL from this check and caused it to reject a rewrite that merely un-glued them. That
+    is a false accusation of hallucination against a correct sentence.
+
+    Splitting aggressively is safe here because the result is never displayed; it only
+    decides whether a name appears in the source at all.
+    """
+    joined = " \n ".join(texts)
+    for skill, pattern in _SKILL_PATTERNS:
+        joined = pattern.sub(f" {skill} ", joined)
+    # Separate any remaining lowercase-to-uppercase run, so "andGemini" is searchable.
+    joined = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", joined)
+    return joined.casefold()
+
+
 def check_claims(text: str, supporting: list[str]) -> ClaimReport:
     """Compare generated prose against the text of the facts it was built from.
 
     `supporting` is the raw values of the accepted facts handed to the writer. Anything the
     prose names that those facts do not is reported.
     """
-    haystack = " \n ".join(supporting).casefold()
+    haystack = _searchable(supporting)
     report = ClaimReport()
 
     for skill, pattern in _SKILL_PATTERNS:

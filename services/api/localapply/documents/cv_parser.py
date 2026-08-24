@@ -27,12 +27,16 @@ LINKEDIN_RE = re.compile(r"(?:https?://)?(?:[\w-]+\.)?linkedin\.com/in/[\w%-]+/?
 GITHUB_RE = re.compile(r"(?:https?://)?(?:www\.)?github\.com/[\w-]+/?", re.I)
 URL_RE = re.compile(r"https?://[^\s<>()\[\]]+", re.I)
 
-#: Section headings, matched on a line of their own.
+#: Section headings, matched on a line of their own. Real CVs use headings this list will
+#: never fully anticipate ("AI ENGINEERING & LLM SYSTEMS", "KEY ACHIEVEMENTS"), so
+#: `looks_like_heading` also accepts any short ALL-CAPS line -- which is what CV headings
+#: overwhelmingly are.
 SECTION_RE = re.compile(
     r"^\s*(summary|profile|objective|about(?:\s+me)?|skills?|technical\s+skills?|"
     r"technologies|experience|work\s+experience|employment(?:\s+history)?|"
     r"professional\s+experience|education|qualifications|projects?|"
-    r"certifications?|certificates|awards|languages|interests|references)\s*:?\s*$",
+    r"certifications?|certificates|awards|languages|interests|references)"
+    r"[\s&/-]*[a-z\s&/-]*:?\s*$",
     re.IGNORECASE,
 )
 
@@ -51,6 +55,58 @@ SECTION_ALIASES = {
     "awards": "awards", "languages": "languages",
     "interests": "interests", "references": "references",
 }
+
+#: An ALL-CAPS line short enough to be a heading rather than a sentence.
+_CAPS_HEADING_RE = re.compile(r"^[A-Z][A-Z0-9 &/,'.\-]{2,44}$")
+
+#: Words that identify which bucket an unrecognised heading belongs in.
+_HEADING_HINTS: tuple[tuple[str, str], ...] = (
+    ("achievement", "achievements"),
+    ("experience", "experience"),
+    ("employment", "experience"),
+    ("education", "education"),
+    ("certification", "certifications"),
+    ("certificate", "certifications"),
+    ("project", "projects"),
+    ("skill", "skills"),
+    ("technical", "skills"),
+    ("technolog", "skills"),
+    ("engineering", "skills"),
+    ("stack", "skills"),
+    ("summary", "summary"),
+    ("profile", "summary"),
+    ("language", "languages"),
+    ("award", "awards"),
+    ("interest", "interests"),
+    ("reference", "references"),
+)
+
+
+def looks_like_heading(line: str) -> str | None:
+    """Return the section a line introduces, or None.
+
+    Two passes: the known vocabulary first, then any short ALL-CAPS line classified by the
+    words it contains. Without the second pass, "EDUCATION & CERTIfiCATIONS" and "AI
+    PROJECTS" fall into whatever section preceded them, and their content is lost.
+    """
+    stripped = line.strip().rstrip(":").strip()
+    if not stripped or len(stripped) > 60:
+        return None
+
+    match = SECTION_RE.match(stripped)
+    if match:
+        key = re.sub(r"\s+", " ", match.group(1).strip().lower())
+        return SECTION_ALIASES.get(key, key)
+
+    # An ALL-CAPS line with no sentence punctuation is a heading in almost every CV.
+    if _CAPS_HEADING_RE.match(stripped) and not stripped.endswith("."):
+        lowered = stripped.lower()
+        for hint, section in _HEADING_HINTS:
+            if hint in lowered:
+                return section
+        return "other"
+    return None
+
 
 #: A curated vocabulary, so skills are recognised even without a SKILLS heading. Matching a
 #: known list beats guessing at arbitrary capitalised words, which produces noise.
@@ -115,6 +171,9 @@ TITLE_HINT_RE = re.compile(
 #: them turns a CV line into "•Full-Stack Developer, Carepool" on the rendered document.
 BULLET_CHARS = "•·●▪◦‣∙*-–—•▪●"
 
+#: Ceiling on skill proposals from one document. See _extract_skills.
+MAX_SKILL_FACTS = 30
+
 
 def clean_line(text: str) -> str:
     """Strip list markers and collapse whitespace, without touching real punctuation."""
@@ -155,10 +214,9 @@ def split_sections(text: str) -> dict[str, list[str]]:
 
     for raw in text.split("\n"):
         line = raw.strip()
-        match = SECTION_RE.match(line)
-        if match:
-            key = re.sub(r"\s+", " ", match.group(1).strip().lower())
-            current = SECTION_ALIASES.get(key, key)
+        heading = looks_like_heading(line)
+        if heading is not None:
+            current = heading
             sections.setdefault(current, [])
             continue
         if line:
@@ -286,34 +344,88 @@ def _extract_skills(text: str, sections: dict[str, list[str]]) -> list[Extracted
                 ExtractedFact(skill, skill, FactCategory.SKILL.value, 0.85, line[:200])
             )
 
-    # Known technologies anywhere in the document, at lower confidence.
-    for skill, pattern in _SKILL_PATTERNS:
-        if skill.lower() in seen:
-            continue
-        match = pattern.search(text)
-        if match:
-            seen.add(skill.lower())
-            facts.append(
-                ExtractedFact(skill, skill, FactCategory.SKILL.value, 0.7,
-                              _line_for(text, match.group(0)))
-            )
+    # A whole-document scan only when the CV has no usable skills section. When one exists,
+    # scanning the prose as well produced 61 skills from a CV that lists about 30 -- every
+    # technology mentioned in passing became a claimed skill, and the rendered CV turned
+    # into a keyword wall.
+    if len(facts) < 5:
+        for skill, pattern in _SKILL_PATTERNS:
+            if skill.lower() in seen:
+                continue
+            match = pattern.search(text)
+            if match:
+                seen.add(skill.lower())
+                facts.append(
+                    ExtractedFact(skill, skill, FactCategory.SKILL.value, 0.7,
+                                  _line_for(text, match.group(0)))
+                )
 
-    return facts
+    # Hard ceiling on proposals. A CV cannot show more than a dozen or so usefully, and a
+    # review queue of eighty skill cards is not a review anyone completes.
+    return facts[:MAX_SKILL_FACTS]
+
+
+#: A top-level bullet glued straight to its text -- "•Full-Stack Developer" -- which is how
+#: PDF extraction renders the outer level of a nested list. The inner level keeps its space
+#: ("• Designed and deployed..."). That difference is the most reliable entry delimiter in a
+#: real CV, and far more common than a date range.
+_ENTRY_BULLET_RE = re.compile(r"^[•·●▪‣∙]\S")
+_SUB_BULLET_RE = re.compile(r"^[•·●▪‣∙*\-–—]\s")
+
+
+def _is_entry_head(line: str, previous_was_sub: bool) -> bool:
+    """Does this line start a new entry (a role, a degree, a project)?
+
+    Four signals, strongest first. Relying on date ranges alone -- the original rule --
+    collapsed a CV with six roles into a single entry, because its roles are dated
+    "Full-time | 1 Year" rather than "2021 - 2023".
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+
+    # 1. A bullet with no space after it: the outer level of a nested list.
+    if _ENTRY_BULLET_RE.match(stripped):
+        return True
+
+    # 2. An inner bullet is never an entry head.
+    if _SUB_BULLET_RE.match(stripped):
+        return False
+
+    body = clean_line(stripped)
+
+    # 3. A dated line, the classic layout.
+    if DATE_RANGE_RE.search(body):
+        return True
+
+    # 4. A short unbulleted line naming a role, right after a run of sub-bullets or at the
+    #    start of a section -- "Software Engineer, NU Scaler".
+    return bool(
+        len(body) <= 90
+        and TITLE_HINT_RE.search(body)
+        and not body.endswith((".", ":"))
+        and (previous_was_sub or True)
+    )
 
 
 def _entries(lines: list[str]) -> list[list[str]]:
-    """Group a section's lines into entries, starting a new one at each dated line.
+    """Group a section's lines into entries.
 
-    CV layouts vary wildly; a date range is the most reliable entry delimiter there is.
+    An entry is a head line plus the lines beneath it, so a role keeps its own bullets
+    instead of every role in the section merging into one blob.
     """
     entries: list[list[str]] = []
     current: list[str] = []
+    previous_was_sub = False
+
     for line in lines:
-        if DATE_RANGE_RE.search(line) and current:
+        if _is_entry_head(line, previous_was_sub) and current:
             entries.append(current)
             current = [line]
         else:
             current.append(line)
+        previous_was_sub = bool(_SUB_BULLET_RE.match(line.strip()))
+
     if current:
         entries.append(current)
     return [e for e in entries if e]
@@ -461,6 +573,11 @@ class CVParser:
     name = "rules"
 
     def parse(self, text: str) -> CVExtraction:
+        # Repair PDF extraction artefacts first: without it, headings, glued words and
+        # mangled ligatures make everything downstream guess.
+        from .cleanup import repair
+
+        text = repair(text)
         sections = split_sections(text)
         result = CVExtraction(sections=sections)
 

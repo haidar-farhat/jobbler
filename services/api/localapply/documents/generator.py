@@ -23,6 +23,25 @@ from uuid import UUID
 from ..profile.facts import FactCategory, FactStatus
 from .matching import MatchResult, extract_requirements, match, order_skills, rank_experience
 
+# One page is the brief. A recruiter spends seconds on a CV, and an ATS does not reward
+# length -- so the document is budgeted rather than allowed to grow with the profile. These
+# are the caps that keep a rich profile (six roles, thirty skills, eleven projects) to a
+# single readable page.
+MAX_ROLES = 4
+MAX_BULLETS_PER_ROLE = 2
+MAX_EDUCATION = 3
+MAX_PROJECTS = 2
+MAX_CERTIFICATIONS = 3
+
+
+def _trim_detail(fact) -> dict:
+    """Carry a fact's structure through, with its bullet list cut to the page budget."""
+    detail = dict(getattr(fact, "detail", None) or {})
+    bullets = detail.get("bullets") or []
+    if bullets:
+        detail["bullets"] = bullets[:MAX_BULLETS_PER_ROLE]
+    return detail
+
 
 class UngroundedDocument(RuntimeError):
     """A document tried to claim something no accepted fact supports."""
@@ -155,19 +174,21 @@ class DocumentGenerator:
                 )
             )
 
-        for heading, category in (
-            ("Experience", FactCategory.EXPERIENCE.value),
-            ("Education", FactCategory.EDUCATION.value),
-            ("Projects", FactCategory.PROJECT.value),
-            ("Certifications", FactCategory.CERTIFICATION.value),
+        for heading, category, limit in (
+            ("Experience", FactCategory.EXPERIENCE.value, MAX_ROLES),
+            ("Education", FactCategory.EDUCATION.value, MAX_EDUCATION),
+            ("Projects", FactCategory.PROJECT.value, MAX_PROJECTS),
+            ("Certifications", FactCategory.CERTIFICATION.value, MAX_CERTIFICATIONS),
         ):
-            entries = _by_category(facts, category)
+            entries = _by_category(facts, category)[:limit]
             if entries:
                 plan.sections.append(
                     DocumentSection(
                         heading,
-                        [DocumentItem(f.value, [f.id], getattr(f, "detail", {}) or {})
-                         for f in entries],
+                        [
+                            DocumentItem(f.value, [f.id], _trim_detail(f))
+                            for f in entries
+                        ],
                     )
                 )
         return plan
