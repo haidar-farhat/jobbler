@@ -1,7 +1,32 @@
-Placeholder CV file.
+Haidar Farhat
+Senior AI Engineer
+Beirut, Lebanon | +961 71 234 567 | haidar@example.com
+linkedin.com/in/haidar-farhat | github.com/haidar-farhat | https://haidar.dev
 
-Stands in for a real PDF so the UPLOAD action path can be exercised end to end without
-committing a binary to the repo. Playwright's set_input_files does not care about the
-extension.
+SUMMARY
+AI engineer with three years building retrieval-augmented systems and browser automation.
+Comfortable owning a pipeline end to end, from ingestion through evaluation to the API that
+serves it.
 
-Replace with your actual CV once document generation lands in Phase 3.
+SKILLS
+Python, TypeScript, FastAPI, React, Laravel, PostgreSQL, Redis
+Docker, Playwright, RAG, LangChain, PyTorch, OCR, Git, CI/CD
+
+EXPERIENCE
+Senior AI Engineer, Fitly — 2023 - Present
+Built a RAG pipeline over 40k documents; cut retrieval latency by 60%.
+Owned the evaluation harness and the FastAPI services in front of it.
+
+Backend Engineer, CarePool — 2021 - 2023
+Laravel and PostgreSQL for a scheduling platform serving 12k users.
+Introduced CI/CD and containerised the deployment.
+
+EDUCATION
+BSc Computer Science, Lebanese University — 2018 - 2021
+
+PROJECTS
+Brevet-GPT — an exam-preparation assistant using OCR and local LLM inference.
+LocalApply — a local-first autonomous job-application workstation.
+
+CERTIFICATIONS
+AWS Certified Cloud Practitioner, 2023
