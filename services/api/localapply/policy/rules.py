@@ -15,6 +15,7 @@ from ..contracts import (
     TARGETED_ACTIONS,
     ActionType,
     Decision,
+    ElementRole,
     Observation,
     PageKind,
     PolicyOutcome,
@@ -203,6 +204,50 @@ def r015_already_done(d: Decision, o: Observation, c: RunContext) -> PolicyVerdi
     return None
 
 
+#: Which element roles each action makes sense on. A model reading the role column can
+#: still ignore it -- one tried to `type` into a Submit button, and the executor surfaced it
+#: as a raw Playwright error ("Element is not an <input>"). Policy should catch a
+#: nonsensical action before the browser does.
+_ROLE_EXPECTATIONS: dict[ActionType, frozenset[ElementRole]] = {
+    ActionType.TYPE: frozenset({ElementRole.TEXTBOX, ElementRole.TEXTAREA}),
+    ActionType.SELECT: frozenset({ElementRole.COMBOBOX}),
+    ActionType.UPLOAD: frozenset({ElementRole.FILE_INPUT}),
+    ActionType.SUBMIT: frozenset({ElementRole.BUTTON}),
+    ActionType.CLICK: frozenset(
+        {
+            ElementRole.BUTTON,
+            ElementRole.LINK,
+            ElementRole.CHECKBOX,
+            ElementRole.RADIO,
+            ElementRole.OTHER,
+        }
+    ),
+}
+
+
+def r016_action_fits_the_element(
+    d: Decision, o: Observation, c: RunContext
+) -> PolicyVerdict | None:
+    """Refuse an action the target element cannot perform.
+
+    Without this the mismatch reaches Playwright and comes back as a stack trace rather than
+    a decision, which tells the user nothing and burns an action from the budget.
+    """
+    expected = _ROLE_EXPECTATIONS.get(d.action)
+    if expected is None or d.target_ref is None:
+        return None
+    element = o.element(d.target_ref)
+    if element is None or element.role in expected:
+        return None
+
+    wanted = ", ".join(sorted(r.value for r in expected))
+    return _deny(
+        "R016_ROLE_MISMATCH",
+        f"Cannot {d.action.value} a {element.role.value} ({element.name!r}); "
+        f"that action needs a {wanted}.",
+    )
+
+
 DENY_RULES = [
     r001_kill_switch,
     r002_unknown_ref,
@@ -211,6 +256,7 @@ DENY_RULES = [
     r005_never_autofill,
     r006_element_unusable,
     r015_already_done,
+    r016_action_fits_the_element,
 ]
 
 

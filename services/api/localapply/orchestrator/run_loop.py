@@ -358,16 +358,20 @@ class RunManager:
                     return
 
                 if decision.action is ActionType.ASK_USER:
+                    # Raise a real approval rather than pausing silently. An earlier version
+                    # just set the status and waited, so the dashboard showed
+                    # "waiting_approval" with nothing to act on and the run sat there
+                    # forever. Approving resumes; rejecting ends the run.
                     await self._transition(handle, S.BLOCKED)
                     await self._transition(handle, S.USER_INTERVENTION)
-                    await self.pause(handle.run_id)
-                    handle.status = "waiting_approval"
-                    await self._bus.emit(
-                        handle.run_id,
-                        EventType.RUN_PAUSED,
-                        f"Needs you: {decision.reason}",
-                    )
-                    await handle.resume_signal.wait()
+                    resume = await self._ask_for_help(handle, observation, decision)
+                    if not resume:
+                        await self._bus.emit(
+                            handle.run_id, EventType.RUN_FINISHED, "Stopped at your request."
+                        )
+                        await self._finish(handle, "stopped", "user declined to continue")
+                        return
+                    await self._transition(handle, S.FORM_ANALYZED, tolerant=True)
                     continue
 
                 finished = await self._step(handle, observation, decision)
@@ -505,6 +509,54 @@ class RunManager:
             return True
 
         return False
+
+    async def _ask_for_help(
+        self, handle: RunHandle, observation: Observation, decision: Decision
+    ) -> bool:
+        """Surface an ASK_USER as an approval card. True to carry on, False to stop."""
+        approval = m.Approval(
+            run_id=handle.run_id,
+            fingerprint=decision_fingerprint(decision),
+            action=ActionType.ASK_USER.value,
+            target_ref=decision.target_ref,
+            target_name=observation.title or observation.url,
+            proposed_value=None,
+            reason=decision.reason,
+            policy_rule="R000_AGENT_ASKED",
+        )
+        await self._save(approval)
+
+        pending = PendingApproval(approval_id=approval.id, decision=decision)
+        handle.pending = pending
+        handle.status = "waiting_approval"
+
+        await self._bus.emit(
+            handle.run_id,
+            EventType.APPROVAL_REQUESTED,
+            f"The agent needs you: {decision.reason}",
+            agent=self._reasoner.name,
+            payload={
+                "approval_id": str(approval.id),
+                "action": ActionType.ASK_USER.value,
+                "target_name": approval.target_name,
+                "reason": decision.reason,
+                "policy_rule": "R000_AGENT_ASKED",
+                "help": (
+                    "Do whatever is needed in the browser window, then approve to carry on. "
+                    "Reject to end the run."
+                ),
+            },
+        )
+
+        await pending.event.wait()
+        handle.pending = None
+        handle.status = "running"
+
+        # Whatever the person did in the browser invalidates what the agent last saw, so
+        # every ref is dropped and the loop re-observes before acting again.
+        if pending.approved and handle.session is not None:
+            handle.session.invalidate()
+        return pending.approved
 
     async def _await_approval(
         self, handle: RunHandle, observation: Observation, decision: Decision, verdict
