@@ -208,6 +208,73 @@ def ensure_profile(root: Path, python: Path) -> None:
     ok(first or "Profile ready")
 
 
+def report_subsystems(health: dict) -> None:
+    """Say what the app can actually do, from its own health report.
+
+    The launcher used to announce "Ready" whatever state things were in, so a missing model
+    or an unusable browser only showed up as a failed run later.
+    """
+    subsystems = health.get("subsystems", {})
+
+    browser = subsystems.get("browser", {})
+    if not browser.get("ok", True):
+        warn(f"Browser unavailable: {browser.get('error', 'unknown reason')}")
+    elif not browser.get("headless", True):
+        print(f"      {dim('A Chromium window will open when a run starts.')}")
+
+    ai = subsystems.get("ai", {})
+    reasoner = ai.get("reasoner", "stub")
+    if reasoner == "stub":
+        print(
+            f"      {dim('Reasoner: scripted (deterministic). Set LA_REASONER=ollama '
+                         'for the local model.')}"
+        )
+        return
+
+    if not ai.get("ok", True):
+        warn(ai.get("error", "The AI engine is not reachable."))
+        warn("Runs will pause and ask for help. Set LA_REASONER=stub to run without it.")
+        return
+
+    resident = ", ".join(ai.get("resident") or []) or "none loaded yet"
+    used, budget = ai.get("vram_used_mb"), ai.get("vram_budget_mb")
+    vram = f", {used}/{budget} MB VRAM" if used is not None else ""
+    ok(f"Local model: {resident}{vram}")
+
+
+def check_ai_engine(root: Path) -> None:
+    """Warn early when the configured model backend is not actually there.
+
+    Only advisory: the app starts either way and degrades to asking you for help, which is
+    better than refusing to boot over an optional component.
+    """
+    reasoner = os.environ.get("LA_REASONER", "").strip().lower()
+    if not reasoner:
+        env_file = root / ".env"
+        if env_file.is_file():
+            for line in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.strip().startswith("LA_REASONER="):
+                    reasoner = line.split("=", 1)[1].strip().lower()
+                    break
+
+    if reasoner != "ollama":
+        ok("Reasoner: scripted (no model needed)")
+        return
+
+    base = os.environ.get("LA_OLLAMA_BASE_URL", "http://localhost:11434")
+    tags = http_json(f"{base}/api/tags", timeout=4.0)
+    if tags is None:
+        warn(f"LA_REASONER=ollama but nothing is answering at {base}.")
+        warn("Start Ollama, or set LA_REASONER=stub. Starting anyway.")
+        return
+
+    models = [m.get("name", "") for m in tags.get("models", [])]
+    if not models:
+        warn("Ollama is running but has no models. Import one, or set LA_REASONER=stub.")
+        return
+    ok(f"Ollama ready: {', '.join(models[:3])}")
+
+
 def start_api(root: Path, python: Path, port: int) -> subprocess.Popen:
     api = root / "services" / "api"
     if http_json(f"http://127.0.0.1:{port}/health") is not None:
