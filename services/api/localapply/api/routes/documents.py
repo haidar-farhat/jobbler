@@ -38,9 +38,17 @@ MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 @router.post("", status_code=201)
 async def upload_document(
     file: UploadFile = File(...),
+    reimport: bool = False,
     settings: Settings = Depends(get_app_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Upload a CV and propose facts from it.
+
+    `reimport=true` re-extracts a file already uploaded before. Useful after a parser
+    improvement: the new proposals arrive as *conflicts* against whatever you accepted from
+    the earlier extraction, so you see exactly what would change and nothing is rewritten
+    behind your back.
+    """
     profile = await current_profile(session)
     if profile is None:
         raise HTTPException(400, "Create a profile before uploading a CV.")
@@ -60,9 +68,39 @@ async def upload_document(
             )
         )
     ).scalars().first()
-    if existing is not None:
+    if existing is not None and not reimport:
         # Same bytes as before: return the earlier import rather than duplicating proposals.
         return await _document_payload(session, existing, already_imported=True)
+
+    if existing is not None and reimport:
+        # Drop the previous proposals from this file -- they came from the old extraction --
+        # then re-extract. Accepted facts are untouched; improved values come back as
+        # conflicts for you to approve.
+        old = (
+            await session.execute(
+                select(m.ProfileFact).where(
+                    m.ProfileFact.document_id == existing.id,
+                    m.ProfileFact.status == FactStatus.PROPOSED.value,
+                )
+            )
+        ).scalars().all()
+        for fact in old:
+            await session.delete(fact)
+        await session.commit()
+
+        try:
+            extracted = extract(data, file.filename or "")
+        except ExtractionError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+        existing.text = extracted.text
+        existing.text_chars = extracted.chars
+        existing.parser = extracted.parser
+        session.add(existing)
+        await session.commit()
+
+        await _import_facts(session, profile.id, existing, extracted.text)
+        return await _document_payload(session, existing)
 
     try:
         extracted = extract(data, file.filename or "")
@@ -137,6 +175,7 @@ async def _import_facts(
                 document_id=document.id,
                 supersedes_id=proposal.supersedes_id,
                 evidence=proposal.fact.evidence,
+                detail=proposal.fact.detail,
             )
         )
     await session.commit()

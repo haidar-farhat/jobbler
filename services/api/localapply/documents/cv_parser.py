@@ -274,7 +274,7 @@ def _extract_skills(text: str, sections: dict[str, list[str]]) -> list[Extracted
     for line in sections.get("skills", []):
         body = line.split(":", 1)[1] if ":" in line[:30] else line
         for token in SKILL_SPLIT_RE.split(body):
-            skill = token.strip(" .-–—•·")
+            skill = clean_line(token).strip(" .")
             if not (2 <= len(skill) <= 40) or skill.lower() in seen:
                 continue
             if not any(ch.isalpha() for ch in skill):
@@ -317,39 +317,121 @@ def _entries(lines: list[str]) -> list[list[str]]:
     return [e for e in entries if e]
 
 
-def _extract_experience(sections: dict[str, list[str]]) -> list[ExtractedFact]:
+def _split_headline(headline: str) -> tuple[str, str, str]:
+    """Pull role, organisation and dates out of an entry's first line.
+
+    CV headlines are wildly inconsistent -- "Senior AI Engineer, Fitly - 2023 - Present",
+    "Fitly | Senior AI Engineer | 2023", "Backend Engineer at CarePool". This handles the
+    common shapes and degrades to putting everything in `role`, which still renders sensibly.
+    """
+    line = clean_line(headline)
+
+    dates = ""
+    match = DATE_RANGE_RE.search(line)
+    if match:
+        dates = clean_line(match.group(0))
+        line = clean_line(line[: match.start()] + " " + line[match.end():])
+
+    # Trailing separators left behind once the dates were removed.
+    line = line.strip(" ,;|-–—·•")
+
+    # Split at whichever separator appears *first*, not at whichever is first in a list of
+    # preferences. "Full-Stack Developer, Carepool Full-time | 1 Year" splits at the comma;
+    # preferring the pipe left role and employer glued together.
+    role, organisation = line, ""
+    earliest = None
+    for separator in (" — ", " – ", " - ", " | ", ", ", " at ", " @ "):
+        position = line.find(separator)
+        if position != -1 and (earliest is None or position < earliest[0]):
+            earliest = (position, separator)
+
+    if earliest is not None:
+        _, separator = earliest
+        left, right = line.split(separator, 1)
+        role, organisation = clean_line(left), clean_line(right)
+
+    # Whatever follows a pipe or middot after the employer is duration or contract noise
+    # ("| 1 Year"), not part of the name.
+    organisation = re.split(r"\s*[|·•]\s*", organisation)[0]
+    organisation = re.sub(
+        r"\b(full[- ]time|part[- ]time|contract|freelance|internship|remote|"
+        r"\d+\s*(?:year|month)s?)\b",
+        "", organisation, flags=re.IGNORECASE,
+    ).strip(" ,;|-–—")
+
+    return role[:90], organisation[:90], dates[:40]
+
+
+def _structured_entries(lines: list[str], category: str, limit: int,
+                        confidence: float) -> list[ExtractedFact]:
+    """One fact per entry, with its parts kept separate rather than joined into a blob."""
     facts: list[ExtractedFact] = []
-    for entry in _entries(sections.get("experience", []))[:12]:
-        headline = entry[0][:200]
-        dates = DATE_RANGE_RE.search(" ".join(entry[:3]))
-        summary = " · ".join(entry[:2])[:300]
+
+    for entry in _entries(lines)[:limit]:
+        cleaned = [clean_line(line) for line in entry if clean_line(line)]
+        if not cleaned:
+            continue
+
+        role, organisation, dates = _split_headline(cleaned[0])
+        bullets = [line for line in cleaned[1:] if len(line) > 12][:6]
+
+        headline = " — ".join(p for p in (role, organisation) if p) or cleaned[0]
         facts.append(
             ExtractedFact(
                 key=headline[:80],
-                value=summary,
-                category=FactCategory.EXPERIENCE.value,
-                confidence=0.75 if dates else 0.55,
-                evidence=headline,
+                # `value` stays a readable one-liner, for the profile table and for any
+                # consumer that does not understand `detail`.
+                value=(f"{headline}{f' ({dates})' if dates else ''}")[:200],
+                category=category,
+                confidence=confidence if dates else confidence - 0.15,
+                evidence=cleaned[0][:200],
+                detail={
+                    "role": role,
+                    "organisation": organisation,
+                    "dates": dates,
+                    "bullets": bullets,
+                },
             )
         )
     return facts
 
 
+def _extract_experience(sections: dict[str, list[str]]) -> list[ExtractedFact]:
+    return _structured_entries(
+        sections.get("experience", []), FactCategory.EXPERIENCE.value, 12, 0.75
+    )
+
+
 def _extract_education(sections: dict[str, list[str]]) -> list[ExtractedFact]:
-    return [
-        ExtractedFact(entry[0][:80], " · ".join(entry[:2])[:300],
-                      FactCategory.EDUCATION.value, 0.7, entry[0][:200])
-        for entry in _entries(sections.get("education", []))[:8]
-    ]
+    return _structured_entries(
+        sections.get("education", []), FactCategory.EDUCATION.value, 8, 0.7
+    )
 
 
 def _extract_simple(sections: dict[str, list[str]], name: str, category: str,
                     confidence: float) -> list[ExtractedFact]:
-    return [
-        ExtractedFact(line[:80], line[:300], category, confidence, line[:200])
-        for line in sections.get(name, [])[:12]
-        if len(line) > 3
-    ]
+    facts = []
+    for raw in sections.get(name, [])[:12]:
+        line = clean_line(raw)
+        if len(line) <= 3:
+            continue
+        # "Brevet-GPT — an exam-preparation assistant" -> title and description apart, so
+        # the CV can bold the name instead of printing one run-on line.
+        title, _, description = line.partition(" — ")
+        if not description:
+            title, _, description = line.partition(" - ")
+        facts.append(
+            ExtractedFact(
+                key=(title or line)[:80],
+                value=line[:300],
+                category=category,
+                confidence=confidence,
+                evidence=raw.strip()[:200],
+                detail={"title": clean_line(title or line)[:90],
+                        "description": clean_line(description)[:220]},
+            )
+        )
+    return facts
 
 
 def _extract_title(sections: dict[str, list[str]]) -> list[ExtractedFact]:

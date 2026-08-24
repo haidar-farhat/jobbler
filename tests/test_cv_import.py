@@ -263,3 +263,101 @@ def test_only_accepted_status_is_usable():
     assert is_usable(FactStatus.ACCEPTED.value)
     for status in (FactStatus.PROPOSED, FactStatus.REJECTED, FactStatus.SUPERSEDED):
         assert not is_usable(status.value), f"{status.value} must not be usable"
+
+
+# --------------------------------------------------------------------------------------
+# Structured entries
+#
+# Reported from real use: the generated CV read as a list of database rows -- entries like
+# "•Full-Stack Developer, Carepool Full-time | 1 Year · • Designed and deployed...". The
+# extractor was joining raw lines with " · " and keeping the bullet glyphs.
+# --------------------------------------------------------------------------------------
+
+
+def test_bullet_glyphs_are_stripped():
+    from localapply.documents.cv_parser import clean_line
+
+    assert clean_line("•Full-Stack Developer") == "Full-Stack Developer"
+    assert clean_line("  ●  Designed a thing  ") == "Designed a thing"
+    assert clean_line("- Introduced CI/CD") == "Introduced CI/CD"
+    # Real punctuation inside the line survives.
+    assert clean_line("• Cut latency by 60%; owned the harness.") == (
+        "Cut latency by 60%; owned the harness."
+    )
+
+
+def test_experience_is_split_into_role_organisation_and_dates(extraction):
+    entries = extraction.by_category(FactCategory.EXPERIENCE.value)
+    fitly = next(f for f in entries if "Fitly" in f.value)
+
+    assert fitly.detail["role"] == "Senior AI Engineer"
+    assert fitly.detail["organisation"] == "Fitly"
+    assert "2023" in fitly.detail["dates"]
+    assert "Present" in fitly.detail["dates"]
+
+
+def test_experience_bullets_are_kept_separate(extraction):
+    fitly = next(
+        f for f in extraction.by_category(FactCategory.EXPERIENCE.value) if "Fitly" in f.value
+    )
+    bullets = fitly.detail["bullets"]
+
+    assert len(bullets) >= 2
+    assert any("RAG pipeline" in b for b in bullets)
+    # The blob that started this: bullets must not be glued into the headline.
+    assert "·" not in fitly.value
+    assert "RAG pipeline" not in fitly.value
+
+
+def test_employment_type_noise_is_dropped():
+    from localapply.documents.cv_parser import _split_headline
+
+    role, org, dates = _split_headline("•Full-Stack Developer, Carepool Full-time | 1 Year")
+    assert role == "Full-Stack Developer"
+    assert "Full-time" not in org
+    assert org.startswith("Carepool")
+
+
+def test_headline_without_dates_still_parses():
+    from localapply.documents.cv_parser import _split_headline
+
+    role, org, dates = _split_headline("Backend Engineer at CarePool")
+    assert role == "Backend Engineer"
+    assert org == "CarePool"
+    assert dates == ""
+
+
+def test_projects_separate_title_from_description(extraction):
+    projects = extraction.by_category(FactCategory.PROJECT.value)
+    brevet = next(f for f in projects if "Brevet" in f.value)
+
+    assert brevet.detail["title"] == "Brevet-GPT"
+    assert "exam-preparation" in brevet.detail["description"]
+
+
+def test_the_rendered_cv_is_not_a_row_dump(extraction):
+    """End to end: structure reaches the page as a laid-out entry, not one joined string."""
+    from uuid import uuid4
+
+    from localapply.documents.generator import DocumentGenerator
+    from localapply.documents.render import render_html
+    from localapply.profile.facts import FactStatus
+
+    class F:
+        def __init__(self, f):
+            self.id = uuid4()
+            self.key, self.value, self.category = f.key, f.value, f.category
+            self.detail = f.detail
+            self.status = FactStatus.ACCEPTED.value
+
+    html = render_html(DocumentGenerator().master_cv([F(f) for f in extraction.facts]))
+
+    assert 'class="entry-role"' in html
+    assert 'class="entry-dates"' in html
+    assert "Senior AI Engineer" in html
+    assert "2023 - Present" in html
+    # No bullet glyphs or joined separators leaking into the rendered body. The CSS above
+    # legitimately defines a middot separator for the contact line, so check the body only.
+    body = html.split("</style>")[1]
+    assert "•" not in body
+    assert " · " not in body

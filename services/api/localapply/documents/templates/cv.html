@@ -22,8 +22,19 @@
     border-bottom: 1px solid #d8dbe0;
   }
   ul { margin: 0; padding-left: 16px; }
-  li { margin-bottom: 4px; }
+  li { margin-bottom: 3px; }
   .inline { margin: 0; }
+  .line { margin: 0 0 6px; }
+
+  /* A dated entry: role and employer left, dates right, bullets beneath. */
+  .entry { margin-bottom: 11px; page-break-inside: avoid; }
+  .entry-head {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  }
+  .entry-role { font-weight: 600; }
+  .entry-org { font-weight: 400; color: #333; }
+  .entry-dates { font-size: 9pt; color: #666; white-space: nowrap; }
+  .entry-points { margin-top: 3px; }
   .tag {
     display: inline-block; background: #eef1f5; border: 1px solid #dde1e8;
     border-radius: 3px; padding: 1px 6px; margin: 0 4px 4px 0; font-size: 9pt;
@@ -56,16 +67,39 @@
 
 {% for section in body_sections %}
 <h2>{{ section.heading }}</h2>
+
 {% if section.inline %}
 <p class="inline">
   {% for item in section.items %}<span class="tag">{{ item.text }}</span>{% endfor %}
 </p>
+
 {% else %}
-<ul>
   {% for item in section.items %}
-  <li>{{ item.text }}</li>
+  {% set d = item.detail or {} %}
+  {% if d.get("role") or d.get("organisation") %}
+  {# A dated entry: role and employer on one line, dates right-aligned, bullets beneath. #}
+  <div class="entry">
+    <div class="entry-head">
+      <span class="entry-role">{{ d.get("role") }}{% if d.get("organisation") %}<span class="entry-org">, {{ d["organisation"] }}</span>{% endif %}</span>
+      {% if d.get("dates") %}<span class="entry-dates">{{ d["dates"] }}</span>{% endif %}
+    </div>
+    {% if d.get("bullets") %}
+    <ul class="entry-points">
+      {% for bullet in d["bullets"] %}
+      <li>{{ bullet }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+
+  {% elif d.get("title") %}
+  {# A project or certification: bold the name, keep the description alongside. #}
+  <p class="line"><strong>{{ d["title"] }}</strong>{% if d.get("description") %} — {{ d["description"] }}{% endif %}</p>
+
+  {% else %}
+  <p class="line">{{ item.text }}</p>
+  {% endif %}
   {% endfor %}
-</ul>
 {% endif %}
 {% endfor %}
 

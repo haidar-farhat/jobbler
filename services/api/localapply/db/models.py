@@ -93,6 +93,10 @@ class ProfileFact(SQLModel, table=True):
     supersedes_id: UUID | None = Field(default=None, foreign_key="profile_facts.id")
     #: The line it was found on, so a proposal can be checked against the source text.
     evidence: str | None = None
+    #: Structured parts for entries that have them (role, organisation, dates, bullets).
+    #: Without this an experience fact is one joined line, and the CV renders as a list of
+    #: database rows rather than as a CV.
+    detail: dict = Field(default_factory=dict, sa_column=Column(sa.JSON))
     created_at: datetime = Field(default_factory=utc_now, sa_column=_ts_column())
     resolved_at: datetime | None = Field(
         default=None, sa_column=Column(sa.DateTime(timezone=True), nullable=True)

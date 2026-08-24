@@ -33,6 +33,9 @@ class DocumentItem:
     text: str
     #: Facts backing this line. An empty list is a bug, and `assert_grounded` says so.
     fact_ids: list[UUID] = field(default_factory=list)
+    #: Structured parts carried through from the fact, so the template can lay out a role,
+    #: its employer, its dates and its bullets instead of printing one joined string.
+    detail: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -162,7 +165,9 @@ class DocumentGenerator:
             if entries:
                 plan.sections.append(
                     DocumentSection(
-                        heading, [DocumentItem(f.value, [f.id]) for f in entries]
+                        heading,
+                        [DocumentItem(f.value, [f.id], getattr(f, "detail", {}) or {})
+                         for f in entries],
                     )
                 )
         return plan
@@ -202,7 +207,7 @@ class DocumentGenerator:
                 ]
             elif section.heading == "Experience":
                 section.items = [
-                    DocumentItem(f.value, [f.id])
+                    DocumentItem(f.value, [f.id], getattr(f, "detail", {}) or {})
                     for f in rank_experience(experiences, result.matched)
                 ]
 
@@ -269,7 +274,9 @@ class DocumentGenerator:
             )
 
         for entry in rank_experience(experiences, result.matched)[:2]:
-            body.items.append(DocumentItem(entry.value, [entry.id]))
+            body.items.append(
+                DocumentItem(entry.value, [entry.id], getattr(entry, "detail", {}) or {})
+            )
 
         if contact_ids:
             body.items.append(
