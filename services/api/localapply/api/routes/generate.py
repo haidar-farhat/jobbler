@@ -39,8 +39,9 @@ class GenerateIn(BaseModel):
     job_id: UUID | None = None
     #: Render a PDF as well as HTML. Costs a Chromium launch, so it is opt-out for previews.
     pdf: bool = True
-    #: Let the model rewrite the prose. It may only rephrase lines the deterministic
-    #: generator already grounded -- see documents/llm_writer.py.
+    #: Run the full agentic pipeline: retrieve -> draft -> critique -> revise, with every
+    #: produced line claim-checked. Needs a model; falls back to the rule-based document if
+    #: one is not configured. See documents/writer.py.
     polish: bool = False
 
 
@@ -113,17 +114,36 @@ async def generate(
         raise HTTPException(422, str(exc)) from exc
 
     notes: list[str] = []
+    write_report: dict = {}
     generator_name = generator.name
-    if payload.polish and router is not None:
-        from ...documents.llm_writer import polish as polish_plan
 
-        plan, notes = await polish_plan(
-            plan, router, supporting_values=[f.value for f in facts]
-        )
-        # Rewriting must not have loosened the grounding. Cheap to re-check, and the one
-        # assertion that would catch a rewriter bug.
+    if payload.polish and router is not None:
+        if payload.kind == "tailored_cv":
+            from ...documents.writer import write_tailored_cv
+
+            plan, report = await write_tailored_cv(
+                facts,
+                job_title=payload.job_title,
+                company=payload.company,
+                description=payload.description,
+                router=router,
+                base_plan=plan,
+                match=plan.match,
+            )
+            notes = report.notes
+            write_report = report.as_dict()
+            generator_name = "agentic"
+        else:
+            from ...documents.llm_writer import polish as polish_plan
+
+            plan, notes = await polish_plan(
+                plan, router, supporting_values=[f.value for f in facts]
+            )
+            generator_name = "rules+llm"
+
+        # Whatever the model did, the finished plan must still cite only accepted facts.
+        # Cheap to re-check, and the one assertion that catches a writer bug.
         assert_grounded(plan, {f.id for f in facts})
-        generator_name = "rules+llm"
 
     markup = render_html(plan)
     version = await _next_version(session, profile.id, payload.kind, payload.job_id)
@@ -156,10 +176,10 @@ async def generate(
         except Exception as exc:  # noqa: BLE001 - HTML is still usable without a PDF
             document.pdf_path = None
             await session.commit()
-            return {**_summary(document), "notes": notes,
+            return {**_summary(document), "notes": notes, "writer": write_report,
                     "pdf_error": f"{exc.__class__.__name__}: {exc}"}
 
-    return {**_summary(document), "notes": notes}
+    return {**_summary(document), "notes": notes, "writer": write_report}
 
 
 def _summary(document: m.GeneratedDocument) -> dict:

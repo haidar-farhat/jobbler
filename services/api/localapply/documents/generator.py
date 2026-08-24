@@ -194,8 +194,13 @@ class DocumentGenerator:
         plan.company = company
         plan.match = result
 
-        ordered_names = order_skills(skill_names, result.matched)
-        by_name = {f.value.casefold(): f for f in skills}
+        # Curate before ordering: a CV showing every skill communicates less than one
+        # showing the twelve that matter, and "CI"/"CD"/"CI-CD" side by side looks careless.
+        from .retrieval import curate_skills
+
+        curated = curate_skills(skills, description)
+        ordered_names = order_skills([f.value for f in curated], result.matched)
+        by_name = {f.value.casefold(): f for f in curated}
         experiences = _by_category(facts, FactCategory.EXPERIENCE.value)
 
         for section in plan.sections:

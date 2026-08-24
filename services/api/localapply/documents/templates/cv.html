@@ -25,6 +25,7 @@
   li { margin-bottom: 3px; }
   .inline { margin: 0; }
   .line { margin: 0 0 6px; }
+  .summary { margin: 0; text-align: justify; }
 
   /* A dated entry: role and employer left, dates right, bullets beneath. */
   .entry { margin-bottom: 11px; page-break-inside: avoid; }
@@ -68,7 +69,10 @@
 {% for section in body_sections %}
 <h2>{{ section.heading }}</h2>
 
-{% if section.inline %}
+{% if section.heading == "Summary" %}
+<p class="summary">{{ section.items[0].text }}</p>
+
+{% elif section.inline %}
 <p class="inline">
   {% for item in section.items %}<span class="tag">{{ item.text }}</span>{% endfor %}
 </p>

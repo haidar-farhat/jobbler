@@ -87,8 +87,10 @@ def skill_pattern(skill: str) -> re.Pattern[str]:
 
 _SKILL_PATTERNS = [(skill, skill_pattern(skill)) for skill in KNOWN_SKILLS]
 
-#: Split a skills line into individual skills.
-SKILL_SPLIT_RE = re.compile(r"[,;|/•·●▪*\t]+|\s{3,}|\s+[-–—]\s+")
+#: Split a skills line into individual skills. The slash is a separator only when spaced:
+#: an unspaced one is usually part of the name ("CI/CD", "TCP/IP"), and splitting on it
+#: produced three bogus entries -- "CI", "CD" and "CI/CD" -- on the rendered CV.
+SKILL_SPLIT_RE = re.compile(r"[,;|•·●▪*\t]+|\s+/\s+|\s{3,}|\s+[-–—]\s+")
 
 NAME_STOPWORDS = {
     "curriculum", "vitae", "resume", "cv", "profile", "contact", "summary", "objective",
