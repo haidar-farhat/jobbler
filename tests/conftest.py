@@ -62,11 +62,24 @@ def apply_url() -> str:
 
 @pytest_asyncio.fixture(autouse=True)
 async def database(settings):
-    from localapply.db.session import create_all, dispose_engine, init_engine
+    """A schema-fresh database per test.
+
+    The SQLite file outlives a single test, so without dropping first, rows written by one
+    test leak into the next -- which showed up as a profile "already existing" in a test
+    that had not created one.
+    """
+    from sqlmodel import SQLModel
+
+    from localapply.db.session import create_all, dispose_engine, get_engine, init_engine
 
     settings.ensure_dirs()
     init_engine(settings)
+
+    engine = get_engine()
+    async with engine.begin() as connection:
+        await connection.run_sync(SQLModel.metadata.drop_all)
     await create_all()
+
     yield
     await dispose_engine()
 
