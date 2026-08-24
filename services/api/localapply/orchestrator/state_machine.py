@@ -72,9 +72,14 @@ def _build_transitions() -> dict[ApplicationState, frozenset[ApplicationState]]:
         if state not in TERMINAL_STATES:
             table[state] |= set(_INTERRUPTS)
 
-    # Blocked work waits for a human, then resumes wherever it left off.
+    # Blocked work waits for a human, then resumes wherever it left off -- but resuming
+    # must not become a side door into submission. A run that detoured through a CAPTCHA or
+    # a login wall re-enters the happy path *before* the review gate and passes through it
+    # again, so REVIEW_REQUIRED remains the only predecessor of SUBMITTING.
     table[S.BLOCKED].add(S.USER_INTERVENTION)
-    table[S.USER_INTERVENTION] |= {s for s in _HAPPY_PATH if s is not S.SUBMITTED}
+    table[S.USER_INTERVENTION] |= {
+        s for s in _HAPPY_PATH if s not in {S.SUBMITTING, S.SUBMITTED}
+    }
     table[S.USER_INTERVENTION] |= {S.FAILED, S.CANCELLED}
 
     # A rejected review sends the application back for another pass, not forward.

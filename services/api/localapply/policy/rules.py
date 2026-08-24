@@ -20,6 +20,7 @@ from ..contracts import (
     PolicyOutcome,
     PolicyVerdict,
 )
+from ..safety import KILL_SWITCH
 from .field_classifier import FieldClass, classify
 
 
@@ -41,6 +42,8 @@ class RunContext:
     actions_executed: int = 0
     max_actions: int = 120
     min_confidence: float = 0.60
+    #: Per-run stop, independent of the global switch. The global one is authoritative;
+    #: this only adds a way to halt one run without halting everything.
     kill_switch: bool = False
     dry_run: bool = True
     #: Fingerprints a human has explicitly approved this run.
@@ -75,8 +78,19 @@ def _gate(rule_id: str, reason: str, field_class: str | None = None) -> PolicyVe
 
 
 def r001_kill_switch(d: Decision, o: Observation, c: RunContext) -> PolicyVerdict | None:
+    """Consults the process-global switch directly rather than a copied flag.
+
+    An earlier version read only `c.kill_switch`, which nothing ever set -- so this rule
+    never fired and the kill switch was enforced solely by the executor and the run loop.
+    Reading the global here makes the policy layer's guarantee real instead of depending on
+    every caller remembering to mirror the flag.
+    """
+    if KILL_SWITCH.engaged:
+        return _deny(
+            "R001_KILL_SWITCH", KILL_SWITCH.reason or "All automation is stopped."
+        )
     if c.kill_switch:
-        return _deny("R001_KILL_SWITCH", "All automation is stopped by the kill switch.")
+        return _deny("R001_KILL_SWITCH", "This run is stopped.")
     return None
 
 
