@@ -25,6 +25,11 @@ class StartRunIn(BaseModel):
     goal: str = "Complete this job application."
     job_title: str | None = None
     company: str | None = None
+    #: Pasted job description. Drives requirement matching and CV tailoring.
+    description: str = ""
+    #: Generate a tailored CV for this job and upload that instead of whatever
+    #: `resume_path` currently points at.
+    tailor_cv: bool = True
 
 
 @router.post("/runs", status_code=201)
@@ -48,6 +53,7 @@ async def start_run(
         url=payload.start_url,
         title=payload.job_title or "Untitled role",
         company=payload.company,
+        description=payload.description or None,
     )
     session.add(job)
     await session.commit()
@@ -64,6 +70,16 @@ async def start_run(
     context.job_title = payload.job_title
     context.company = payload.company
 
+    tailored: dict | None = None
+    if payload.tailor_cv and payload.job_title:
+        # Generate a CV for this specific job and point the upload at it, so the agent
+        # attaches a document tailored to the posting rather than a stale generic file.
+        # A failure here must not block the run: it falls back to the existing resume_path
+        # and says so in the response.
+        tailored = await _tailored_cv(session, runs.settings, profile.id, job, payload)
+        if tailored and tailored.get("pdf_path"):
+            context.profile["resume_path"] = tailored["pdf_path"]
+
     try:
         handle = await runs.start(
             start_url=payload.start_url,
@@ -74,7 +90,85 @@ async def start_run(
     except AutomationHalted as exc:
         raise HTTPException(409, str(exc)) from exc
 
-    return handle.snapshot()
+    return {**handle.snapshot(), "tailored_cv": tailored}
+
+
+async def _tailored_cv(session, settings, profile_id, job, payload) -> dict:
+    """Build and store a tailored CV for this job.
+
+    Kept off the run's critical path on purpose: a document problem should degrade to
+    "applied with your existing CV", not "could not apply". Every failure path returns an
+    explanation rather than raising.
+    """
+    from ...documents.generator import (
+        DocumentGenerator,
+        UngroundedDocument,
+        assert_grounded,
+    )
+    from ...documents.render import render_html, render_pdf
+    from ...profile.facts import FactStatus
+
+    facts = list(
+        (
+            await session.execute(
+                select(m.ProfileFact).where(
+                    m.ProfileFact.profile_id == profile_id,
+                    m.ProfileFact.status == FactStatus.ACCEPTED.value,
+                )
+            )
+        ).scalars().all()
+    )
+    if not facts:
+        return {"error": "No accepted profile facts, so no CV was generated."}
+
+    try:
+        plan = DocumentGenerator().tailored_cv(
+            facts,
+            job_title=payload.job_title,
+            company=payload.company,
+            description=payload.description,
+        )
+        assert_grounded(plan, {f.id for f in facts})
+    except UngroundedDocument as exc:
+        return {"error": str(exc)}
+
+    document = m.GeneratedDocument(
+        profile_id=profile_id,
+        job_id=job.id,
+        kind="tailored_cv",
+        version=1,
+        title=plan.title,
+        job_title=plan.job_title,
+        company=plan.company,
+        html=render_html(plan),
+        fact_ids=[str(fid) for fid in sorted(plan.fact_ids, key=str)],
+        match_score=plan.match.score if plan.match else None,
+        match_breakdown=plan.match.as_dict() if plan.match else {},
+    )
+    session.add(document)
+    await session.commit()
+
+    try:
+        settings.ensure_dirs()
+        path = settings.data_dir / "generated" / f"{document.id}.pdf"
+        await render_pdf(plan, path)
+        document.pdf_path = str(path)
+        session.add(document)
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001 - degrade to the existing CV
+        return {
+            "id": str(document.id),
+            "match_score": document.match_score,
+            "error": f"PDF rendering failed ({exc.__class__.__name__}); "
+                     "the run will upload your existing CV.",
+        }
+
+    return {
+        "id": str(document.id),
+        "match_score": document.match_score,
+        "match": document.match_breakdown,
+        "pdf_path": document.pdf_path,
+    }
 
 
 @router.get("/runs")
