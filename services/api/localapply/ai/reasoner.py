@@ -237,11 +237,44 @@ class LLMReasoner(Reasoner):
             ]
         )
 
+    #: One corrective retry. A small local model quite often returns prose around the JSON
+    #: on its first attempt and gets it right when told exactly what was wrong -- cheaper
+    #: than surfacing an ASK_USER and stalling the run for a formatting slip.
+    MAX_ATTEMPTS = 2
+
     async def decide(self, observation: Observation, context: ReasoningContext) -> Decision:
-        raw = await self._router.generate(
-            self.build_prompt(observation, context), system=REASONER_SYSTEM_PROMPT
+        prompt = self.build_prompt(observation, context)
+        last_error = "no attempt was made"
+
+        for _attempt in range(self.MAX_ATTEMPTS):
+            try:
+                raw = await self._router.generate(prompt, system=REASONER_SYSTEM_PROMPT)
+            except Exception as exc:  # noqa: BLE001 - a dead model must not kill the run
+                return Decision(
+                    action=ActionType.ASK_USER,
+                    confidence=0.0,
+                    reason=f"The model could not be reached: {exc.__class__.__name__}. "
+                           "Check that Ollama is running.",
+                )
+
+            decision = self.parse(raw, observation)
+            if decision.action is not ActionType.ASK_USER or decision.confidence > 0:
+                return decision
+
+            last_error = decision.reason
+            prompt = (
+                f"{self.build_prompt(observation, context)}\n\n"
+                f"Your previous reply was rejected: {last_error}\n"
+                "Reply with a single JSON object and nothing else. "
+                "target_ref must be one of the refs in the element table above."
+            )
+
+        return Decision(
+            action=ActionType.ASK_USER,
+            confidence=0.0,
+            reason=f"The model did not return a usable action after "
+                   f"{self.MAX_ATTEMPTS} attempts. Last problem: {last_error}",
         )
-        return self.parse(raw, observation)
 
     @staticmethod
     def parse(raw: str, observation: Observation) -> Decision:

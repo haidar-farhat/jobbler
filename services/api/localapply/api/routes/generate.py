@@ -25,7 +25,7 @@ from ...db.session import get_session
 from ...documents.generator import DocumentGenerator, UngroundedDocument, assert_grounded
 from ...documents.render import render_html, render_pdf
 from ...profile.facts import FactStatus
-from ..deps import get_app_settings
+from ..deps import get_app_settings, get_router
 from .profile import current_profile
 
 router = APIRouter(prefix="/generate", tags=["documents"])
@@ -39,6 +39,9 @@ class GenerateIn(BaseModel):
     job_id: UUID | None = None
     #: Render a PDF as well as HTML. Costs a Chromium launch, so it is opt-out for previews.
     pdf: bool = True
+    #: Let the model rewrite the prose. It may only rephrase lines the deterministic
+    #: generator already grounded -- see documents/llm_writer.py.
+    polish: bool = False
 
 
 async def _accepted_facts(session: AsyncSession, profile_id: UUID) -> list[m.ProfileFact]:
@@ -67,6 +70,7 @@ async def _next_version(session: AsyncSession, profile_id: UUID, kind: str,
 async def generate(
     payload: GenerateIn,
     settings: Settings = Depends(get_app_settings),
+    router=Depends(get_router),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     profile = await current_profile(session)
@@ -108,6 +112,19 @@ async def generate(
     except UngroundedDocument as exc:
         raise HTTPException(422, str(exc)) from exc
 
+    notes: list[str] = []
+    generator_name = generator.name
+    if payload.polish and router is not None:
+        from ...documents.llm_writer import polish as polish_plan
+
+        plan, notes = await polish_plan(
+            plan, router, supporting_values=[f.value for f in facts]
+        )
+        # Rewriting must not have loosened the grounding. Cheap to re-check, and the one
+        # assertion that would catch a rewriter bug.
+        assert_grounded(plan, {f.id for f in facts})
+        generator_name = "rules+llm"
+
     markup = render_html(plan)
     version = await _next_version(session, profile.id, payload.kind, payload.job_id)
 
@@ -123,7 +140,7 @@ async def generate(
         fact_ids=[str(fid) for fid in sorted(plan.fact_ids, key=str)],
         match_score=plan.match.score if plan.match else None,
         match_breakdown=plan.match.as_dict() if plan.match else {},
-        generator=generator.name,
+        generator=generator_name,
     )
     session.add(document)
     await session.commit()
@@ -139,9 +156,10 @@ async def generate(
         except Exception as exc:  # noqa: BLE001 - HTML is still usable without a PDF
             document.pdf_path = None
             await session.commit()
-            return {**_summary(document), "pdf_error": f"{exc.__class__.__name__}: {exc}"}
+            return {**_summary(document), "notes": notes,
+                    "pdf_error": f"{exc.__class__.__name__}: {exc}"}
 
-    return _summary(document)
+    return {**_summary(document), "notes": notes}
 
 
 def _summary(document: m.GeneratedDocument) -> dict:
@@ -156,6 +174,7 @@ def _summary(document: m.GeneratedDocument) -> dict:
         "match_score": document.match_score,
         "match": document.match_breakdown,
         "has_pdf": bool(document.pdf_path),
+        "generator": document.generator,
         "created_at": document.created_at.isoformat(),
     }
 

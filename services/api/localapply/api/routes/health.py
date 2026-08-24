@@ -8,7 +8,7 @@ from sqlalchemy import text
 from ...config import Settings
 from ...db.session import get_engine
 from ...safety import KILL_SWITCH
-from ..deps import get_app_settings, get_run_manager
+from ..deps import get_app_settings, get_router, get_run_manager
 
 router = APIRouter(tags=["health"])
 
@@ -36,10 +36,45 @@ async def _redis_ok(settings: Settings) -> tuple[bool, str | None]:
         return False, f"{exc.__class__.__name__}: {exc}"
 
 
+async def _ai_status(settings: Settings, model_router) -> dict:
+    """Report the AI engine honestly, including which model is actually resident.
+
+    On an 8 GB card only one large model is loaded at a time, so "which one is in VRAM
+    right now" is real operational information rather than a static config echo.
+    """
+    status: dict = {"ok": True, "reasoner": settings.reasoner}
+    if model_router is None:
+        return status
+
+    report = model_router.vram_report()
+    status |= {
+        "resident": report.resident,
+        "vram_used_mb": report.used_mb,
+        "vram_budget_mb": report.budget_mb,
+        "vram_free_mb": report.free_mb,
+        "model_swaps": model_router.stats.swaps,
+        "mean_swap_ms": model_router.stats.mean_swap_ms,
+    }
+
+    if settings.reasoner == "ollama":
+        try:
+            reachable = await model_router.provider.health()
+        except Exception:  # noqa: BLE001
+            reachable = False
+        status["ok"] = reachable
+        if not reachable:
+            status["error"] = (
+                f"Ollama is not answering at {settings.ollama_base_url}. "
+                "Start it, or set LA_REASONER=stub to run without a model."
+            )
+    return status
+
+
 @router.get("/health")
 async def health(
     settings: Settings = Depends(get_app_settings),
     runs=Depends(get_run_manager),
+    model_router=Depends(get_router),
 ) -> dict:
     db_ok, db_error = await _database_ok()
     redis_ok, redis_error = await _redis_ok(settings)
@@ -57,7 +92,7 @@ async def health(
                 "sessions": runs.browser.session_count,
                 "max_sessions": settings.max_browser_sessions,
             },
-            "ai": {"ok": True, "reasoner": settings.reasoner},
+            "ai": await _ai_status(settings, model_router),
         },
         "safety": {
             "kill_switch": KILL_SWITCH.status(),

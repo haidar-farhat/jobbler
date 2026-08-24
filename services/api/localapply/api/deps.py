@@ -19,3 +19,8 @@ def get_bus(request: Request) -> EventBus:
 
 def get_app_settings(request: Request) -> Settings:
     return request.app.state.settings
+
+
+def get_router(request: Request):
+    """The process-wide ModelRouter, or None when no AI engine is configured."""
+    return getattr(request.app.state, "router", None)

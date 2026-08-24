@@ -68,10 +68,24 @@ KNOWN_SKILLS: tuple[str, ...] = (
     "Git", "Jira", "Figma", "Agile", "Scrum", "CI/CD", "Microservices", "Redux",
 )
 
-_SKILL_PATTERNS = [
-    (skill, re.compile(r"(?<![\w+#.])" + re.escape(skill) + r"(?![\w+#.])", re.IGNORECASE))
-    for skill in KNOWN_SKILLS
-]
+def skill_pattern(skill: str) -> re.Pattern[str]:
+    """A word-boundary pattern for a technology name.
+
+    The lookarounds exclude word characters, `+` and `#` so "Python" does not match
+    "Pythonic" and "C" does not match "C++". A following dot is excluded only when it starts
+    another word -- so "Node" will not match inside "Node.js", but a skill at the end of a
+    sentence ("...experience with Kubernetes.") still matches. An earlier version excluded
+    every following dot and silently missed exactly that case, which mattered most in the
+    hallucination check.
+    """
+    escaped = re.escape(skill)
+    return re.compile(
+        r"(?<![\w+#])" + escaped + r"(?![\w+#])(?!\.\w)",
+        re.IGNORECASE,
+    )
+
+
+_SKILL_PATTERNS = [(skill, skill_pattern(skill)) for skill in KNOWN_SKILLS]
 
 #: Split a skills line into individual skills.
 SKILL_SPLIT_RE = re.compile(r"[,;|/•·●▪*\t]+|\s{3,}|\s+[-–—]\s+")

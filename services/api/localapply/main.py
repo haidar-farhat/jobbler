@@ -36,13 +36,18 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 WEB_DIST = REPO_ROOT / "apps" / "web" / "dist"
 
 
-def build_run_manager(settings) -> RunManager:
+def build_model_router(settings) -> ModelRouter:
+    """One router per process. Its exclusive lock is what keeps two coroutines from racing
+    a model swap on a single 8 GB card, so there must not be a second instance."""
     provider = (
         OllamaProvider(settings.ollama_base_url)
         if settings.reasoner == "ollama"
         else StubProvider()
     )
-    router = ModelRouter(provider, vram_budget_mb=settings.vram_budget_mb)
+    return ModelRouter(provider, vram_budget_mb=settings.vram_budget_mb)
+
+
+def build_run_manager(settings, router: ModelRouter) -> RunManager:
     reasoner = LLMReasoner(router) if settings.reasoner == "ollama" else StubReasoner()
 
     return RunManager(
@@ -64,7 +69,8 @@ async def lifespan(app: FastAPI):
 
     app.state.settings = settings
     app.state.bus = EVENT_BUS
-    app.state.runs = build_run_manager(settings)
+    app.state.router = build_model_router(settings)
+    app.state.runs = build_run_manager(settings, app.state.router)
 
     yield
 

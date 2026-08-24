@@ -193,6 +193,13 @@
         <button class="primary" data-gen="tailored_cv">Tailored CV</button>
         <button data-gen="cover_letter">Cover letter</button>
         <button data-gen="master_cv">Master CV</button>
+        <label class="muted" style="display:flex;align-items:center;gap:.35rem;
+               font-size:.78rem;cursor:pointer" title="Let the local model rewrite the
+               prose. It may only rephrase lines already grounded in accepted facts; any
+               rewrite that claims something new is rejected and the original kept.">
+          <input type="checkbox" id="gen-polish" style="width:auto;margin:0">
+          Polish with model
+        </label>
         <span class="muted" id="gen-status" style="font-size:.8rem"></span>
       </div>
       <p id="gen-err" style="color:var(--danger);display:none;font-size:.85rem"></p>
@@ -228,7 +235,14 @@ async function poll() {
     setDot("d-browser", h.subsystems.browser.ok);
     setDot("d-ai", h.subsystems.ai.ok);
     $("t-sessions").textContent = h.subsystems.browser.sessions + "/" + h.subsystems.browser.max_sessions;
-    $("t-reasoner").textContent = h.subsystems.ai.reasoner;
+    const ai = h.subsystems.ai;
+    $("t-reasoner").textContent = ai.reasoner
+      + (ai.resident && ai.resident.length ? " · " + ai.resident.join(", ") : "");
+    $("t-reasoner").title = ai.error
+      || (ai.vram_used_mb !== undefined
+          ? ai.vram_used_mb + " / " + ai.vram_budget_mb + " MB VRAM, "
+            + ai.model_swaps + " model swaps"
+          : "");
 
     // The single most important thing on this page: whether a submit would be real.
     const dry = h.safety.dry_run;
@@ -523,7 +537,8 @@ document.querySelectorAll("[data-gen]").forEach(button => {
           job_title: kind === "master_cv" ? null : $("gen-title").value,
           company: kind === "master_cv" ? null : $("gen-company").value,
           description: $("gen-desc").value,
-          pdf: true
+          pdf: true,
+          polish: $("gen-polish").checked
         })
       });
       $("gen-status").textContent =
@@ -532,6 +547,10 @@ document.querySelectorAll("[data-gen]").forEach(button => {
         + (body.match_score !== null && body.match_score !== undefined
             ? " · match " + Math.round(body.match_score * 100) + "%" : "")
         + (body.pdf_error ? " (PDF failed: " + body.pdf_error + ")" : "");
+      // Say when the model was overruled, rather than quietly discarding its output.
+      if (body.notes && body.notes.length) {
+        $("gen-status").textContent += " — " + body.notes.join("; ");
+      }
       await loadGenerated();
     } catch (e) {
       $("gen-status").textContent = "";

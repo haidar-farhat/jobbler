@@ -16,12 +16,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .cv_parser import KNOWN_SKILLS
+from .cv_parser import KNOWN_SKILLS, skill_pattern
 
-_SKILL_PATTERNS = [
-    (skill, re.compile(r"(?<![\w+#.])" + re.escape(skill) + r"(?![\w+#.])", re.IGNORECASE))
-    for skill in KNOWN_SKILLS
-]
+_SKILL_PATTERNS = [(skill, skill_pattern(skill)) for skill in KNOWN_SKILLS]
 
 #: Wording that marks the *following* requirements as optional.
 _OPTIONAL_MARKER = re.compile(
