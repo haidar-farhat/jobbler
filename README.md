@@ -23,6 +23,7 @@ interfaces that are proven working first.
 - [Agent protocol](docs/agent-protocol.md)
 - [ADR 0001 — why the loop is split four ways](docs/adr/0001-observe-reason-policy-execute.md)
 - [ADR 0002 — why the model never sees a selector](docs/adr/0002-opaque-element-refs.md)
+- [ADR 0003 — a model may rephrase a fact, never author a claim](docs/adr/0003-model-is-a-rewriter.md)
 
 ---
 
