@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .ai.providers.ollama import OllamaProvider
@@ -30,6 +31,9 @@ from .policy.engine import PolicyEngine
 #: jobbler/ — the repo root, four levels up from this file.
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURES_DIR = REPO_ROOT / "evaluation" / "fixtures"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+#: Built React app, when someone has run `pnpm build`. Optional.
+WEB_DIST = REPO_ROOT / "apps" / "web" / "dist"
 
 
 def build_run_manager(settings) -> RunManager:
@@ -99,10 +103,25 @@ def create_app() -> FastAPI:
     )
 
     # The practice job posting the walking skeleton runs against. Served from here so the
-    # whole stack is `docker compose up` + `uvicorn` + `pnpm dev`, with no third server and
-    # no live job site involved.
+    # whole stack is one process plus two containers, with no live job site involved.
     if FIXTURES_DIR.is_dir():
         app.mount("/fixtures", StaticFiles(directory=str(FIXTURES_DIR)), name="fixtures")
+
+    # The dashboard. The zero-build page in static/ needs no Node and is always available;
+    # a built React app takes precedence when present. Serving the UI from the API means
+    # "start the app" is one process, which is what the launcher depends on.
+    if WEB_DIST.is_dir():
+        app.mount("/app", StaticFiles(directory=str(WEB_DIST), html=True), name="web")
+
+        @app.get("/", include_in_schema=False)
+        async def root_built() -> RedirectResponse:
+            return RedirectResponse("/app/")
+
+    else:
+
+        @app.get("/", include_in_schema=False)
+        async def root() -> FileResponse:
+            return FileResponse(STATIC_DIR / "dashboard.html")
 
     return app
 

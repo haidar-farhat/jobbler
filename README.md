@@ -69,7 +69,43 @@ pnpm -v
 docker compose version
 ```
 
+## Running it
+
+Once set up, starting the app is **one double-click**: `LocalApply.exe` at the repo root.
+
+It checks Docker, brings up Postgres and Redis, applies any pending migration, seeds the
+profile if needed, starts the API, and opens the dashboard — reporting each step, and saying
+exactly what to do if one fails. Ctrl+C stops the API and engages the kill switch on the way
+out, so no run is left half-way through a form. The containers stay up so the next start is
+quick.
+
+```
+[1/6] Docker
+      OK  Docker engine 29.7.2
+[2/6] Postgres + Redis
+      OK  Postgres and Redis healthy
+...
+[6/6] API + dashboard
+      OK  API listening on port 8000  [DRY RUN]
+
+  Ready  http://127.0.0.1:8000/
+```
+
+Flags: `--port <n>`, `--no-browser`, `--no-seed`. Rebuild it after changing the launcher:
+
+```powershell
+.\services\api\.venv\Scripts\python.exe launcher\build.py
+```
+
+**The dashboard needs no Node.** The API serves a zero-build Mission Control at `/` — the
+same status strip, live event stream, screenshot view, and approval cards as the React app,
+in one dependency-free HTML file. If you later run `pnpm build` in `apps/web`, the built
+React app takes over at `/` automatically.
+
 ## Setup
+
+Only needed once, and `.\dev.ps1 setup` does all of it in one command.
+
 
 > **Call every tool as `.venv\Scripts\python.exe -m <tool>`.**
 > Not `activate` then `alembic`. Activation is easy to skip silently — and if you do, `pip

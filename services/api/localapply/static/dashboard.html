@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<!--
+  Zero-build Mission Control.
+
+  Served by FastAPI at "/" with no bundler, no npm install, no Node. The React app in
+  apps/web is the richer version; this exists so the product is usable the moment the API
+  is running, and so the launcher has something to open.
+
+  Talks to exactly the same REST + SSE endpoints as the React app.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LocalApply — Mission Control</title>
+<style>
+  :root{--surface:#0d1117;--panel:#161b22;--edge:#262d36;--ink:#e6edf3;--muted:#8b949e;
+        --accent:#58a6ff;--ok:#3fb950;--warn:#d29922;--danger:#f85149}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--surface);color:var(--ink);
+       font:14px/1.5 ui-sans-serif,system-ui,"Segoe UI",sans-serif}
+  header{display:flex;flex-wrap:wrap;gap:1.25rem;align-items:center;padding:.7rem 1.1rem;
+         background:var(--panel);border-bottom:1px solid var(--edge)}
+  .brand{font-weight:600;letter-spacing:-.01em}
+  .light{display:flex;align-items:center;gap:.4rem;font-size:.75rem;color:var(--muted);
+         text-transform:uppercase;letter-spacing:.03em}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--danger)}
+  .dot.on{background:var(--ok)}
+  .badge{padding:.15rem .5rem;border-radius:4px;font-size:.7rem;font-weight:700}
+  .badge.dry{background:rgba(63,185,80,.15);color:var(--ok)}
+  .badge.live{background:rgba(248,81,73,.15);color:var(--danger)}
+  button{font:inherit;cursor:pointer;border-radius:6px;border:1px solid var(--edge);
+         background:transparent;color:var(--ink);padding:.45rem .9rem}
+  button:hover:not(:disabled){background:var(--edge)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.primary{background:var(--accent);color:#07101f;border-color:transparent;font-weight:600}
+  button.stop{background:var(--danger);color:#fff;border-color:transparent;font-weight:700}
+  button.ok{background:var(--ok);color:#04140a;border-color:transparent;font-weight:600}
+  main{display:grid;grid-template-columns:1fr 1fr;gap:1rem;padding:1rem;
+       height:calc(100vh - 53px);grid-template-rows:auto 1fr 16rem}
+  section{background:var(--panel);border:1px solid var(--edge);border-radius:8px;
+          display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  section>h2{margin:0;padding:.5rem .9rem;font-size:.7rem;font-weight:600;color:var(--muted);
+             text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--edge)}
+  .body{padding:.9rem;overflow:auto;min-height:0;flex:1}
+  .span2{grid-column:1/-1}
+  input{width:100%;padding:.5rem;margin-top:.3rem;border:1px solid var(--edge);
+        border-radius:5px;background:var(--surface);color:var(--ink);font:inherit}
+  .row{display:flex;gap:.7rem;align-items:flex-end;flex-wrap:wrap}
+  .row>label{flex:1;min-width:18rem;font-size:.72rem;color:var(--muted)}
+  dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:.5rem 1.5rem;margin:.9rem 0 0}
+  dt{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  dd{margin:.1rem 0 0;font-size:.9rem}
+  #log{font-family:ui-monospace,Consolas,monospace;font-size:11.5px}
+  #log div{display:flex;gap:.7rem;padding:.15rem 0;border-bottom:1px solid rgba(38,45,54,.4)}
+  #log .t{color:var(--muted);flex:0 0 4.5rem}
+  #log .a{color:var(--muted);flex:0 0 5rem}
+  #log .k{flex:0 0 9.5rem}
+  #log .m{flex:1;min-width:0;word-break:break-word}
+  .k.observation,.k.log{color:var(--muted)}
+  .k.policy_verdict,.k.approval_requested,.k.run_paused{color:var(--warn)}
+  .k.action_result,.k.run_finished{color:var(--ok)}
+  .k.run_failed,.k.kill_switch{color:var(--danger)}
+  .k.state_changed,.k.approval_resolved,.k.run_started,.k.run_resumed{color:var(--accent)}
+  .card{border:1px solid rgba(210,153,34,.4);background:rgba(210,153,34,.06);
+        border-radius:6px;padding:.9rem;margin-bottom:.7rem}
+  .card h3{margin:0 0 .2rem;font-size:.95rem}
+  .rule{float:right;font-family:ui-monospace,monospace;font-size:.65rem;color:var(--muted)}
+  .muted{color:var(--muted)}
+  img{width:100%;border:1px solid var(--edge);border-radius:6px;display:block}
+  @media(max-width:900px){main{grid-template-columns:1fr;grid-template-rows:auto auto auto 16rem;height:auto}}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">LocalApply</span>
+  <span class="light"><span class="dot" id="d-db"></span>db</span>
+  <span class="light"><span class="dot" id="d-redis"></span>redis</span>
+  <span class="light"><span class="dot" id="d-browser"></span>browser <b id="t-sessions" style="color:var(--ink)"></b></span>
+  <span class="light"><span class="dot" id="d-ai"></span>ai <b id="t-reasoner" style="color:var(--ink)"></b></span>
+  <span id="t-mode"></span>
+  <span style="margin-left:auto;display:flex;gap:.6rem;align-items:center">
+    <span class="muted" id="t-killreason" style="font-size:.75rem"></span>
+    <button class="stop" id="b-kill">STOP ALL AUTOMATION</button>
+    <button id="b-rearm" style="display:none">RE-ARM</button>
+  </span>
+</header>
+
+<main>
+  <section class="span2">
+    <h2>Mission</h2>
+    <div class="body">
+      <div class="row">
+        <label>Target URL
+          <input id="url" value="http://localhost:8000/fixtures/job.html">
+        </label>
+        <button class="primary" id="b-start">Start run</button>
+        <button id="b-pause">Pause</button>
+        <button id="b-resume">Resume</button>
+        <button id="b-stop">Stop</button>
+      </div>
+      <p id="err" style="color:var(--danger);display:none"></p>
+      <dl>
+        <div><dt>Status</dt><dd id="t-status">—</dd></div>
+        <div><dt>Application state</dt><dd id="t-state">—</dd></div>
+        <div><dt>Actions</dt><dd id="t-actions">—</dd></div>
+        <div><dt>Page</dt><dd id="t-page">—</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section>
+    <h2>Live browser</h2>
+    <div class="body" id="shot"><p class="muted">No screenshot yet. The observer captures one per loop iteration.</p></div>
+  </section>
+
+  <section>
+    <h2>Waiting on you</h2>
+    <div class="body" id="approvals"><p class="muted">Nothing waiting on you.</p></div>
+  </section>
+
+  <section class="span2">
+    <h2>Agent event stream</h2>
+    <div class="body" id="log"><p class="muted">Start a run to watch the agent work.</p></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let runId = null, source = null, seen = new Set(), lastShot = null;
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({headers: {"Content-Type": "application/json"}}, opts));
+  if (!r.ok) throw new Error(r.status + " " + (await r.text()));
+  return r.status === 204 ? null : r.json();
+}
+
+const setDot = (id, ok) => $(id).classList.toggle("on", !!ok);
+const fail = msg => { const e = $("err"); e.textContent = msg; e.style.display = msg ? "block" : "none"; };
+
+function esc(s) {
+  return String(s === null || s === undefined ? "" : s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[c]);
+}
+
+async function poll() {
+  try {
+    const h = await api("/health");
+    setDot("d-db", h.subsystems.database.ok);
+    setDot("d-redis", h.subsystems.redis.ok);
+    setDot("d-browser", h.subsystems.browser.ok);
+    setDot("d-ai", h.subsystems.ai.ok);
+    $("t-sessions").textContent = h.subsystems.browser.sessions + "/" + h.subsystems.browser.max_sessions;
+    $("t-reasoner").textContent = h.subsystems.ai.reasoner;
+
+    // The single most important thing on this page: whether a submit would be real.
+    const dry = h.safety.dry_run;
+    $("t-mode").className = "badge " + (dry ? "dry" : "live");
+    $("t-mode").textContent = dry ? "DRY RUN" : "LIVE — SUBMITS ARE REAL";
+    $("t-mode").title = dry
+      ? "Submits are simulated and never actually clicked."
+      : "Approving a submit sends a genuine application.";
+
+    const ks = h.safety.kill_switch.engaged;
+    $("b-kill").style.display = ks ? "none" : "";
+    $("b-rearm").style.display = ks ? "" : "none";
+    $("t-killreason").textContent = ks ? "stopped: " + h.safety.kill_switch.reason : "";
+  } catch (e) {
+    setDot("d-db", false); setDot("d-redis", false);
+    setDot("d-browser", false); setDot("d-ai", false);
+  }
+
+  if (runId) {
+    try {
+      const r = await api("/agent/runs/" + runId);
+      $("t-status").textContent = r.status;
+      $("t-state").textContent = r.state;
+      $("t-actions").textContent = r.actions_executed + " / " + r.max_actions;
+      $("b-pause").disabled = r.status !== "running";
+      $("b-resume").disabled = r.status !== "paused";
+      $("b-stop").disabled = ["finished", "failed", "stopped"].indexOf(r.status) >= 0;
+    } catch (e) { /* run not in memory yet */ }
+  }
+  await renderApprovals();
+}
+
+async function renderApprovals() {
+  let list = [];
+  try { list = await api("/approvals?status=pending"); } catch (e) { return; }
+  if (runId) list = list.filter(a => a.run_id === runId);
+
+  const box = $("approvals");
+  if (!list.length) {
+    box.innerHTML = '<p class="muted">Nothing waiting on you. The agent stops here whenever a '
+      + "field is a negotiating position, and always before a submit.</p>";
+    return;
+  }
+  box.innerHTML = list.map(a => {
+    const isSubmit = a.action === "submit";
+    const title = isSubmit ? "Submit this application?" : esc(a.target_name || a.action);
+    const editor = (!isSubmit && a.proposed_value !== null)
+      ? '<label style="display:block;margin-top:.6rem;font-size:.72rem;color:var(--muted)">Value to enter'
+        + '<input data-val="' + a.id + '" value="' + esc(a.proposed_value) + '"></label>'
+      : "";
+    return '<div class="card">'
+      + '<span class="rule">' + esc(a.policy_rule) + "</span>"
+      + "<h3>" + title + "</h3>"
+      + '<p class="muted" style="margin:.2rem 0">' + esc(a.reason) + "</p>"
+      + editor
+      + '<div style="display:flex;gap:.5rem;margin-top:.8rem">'
+      + '<button class="ok" data-ok="' + a.id + '">Approve</button>'
+      + '<button data-no="' + a.id + '">Reject</button></div></div>';
+  }).join("");
+}
+
+// Delegated so the buttons survive each re-render.
+$("approvals").addEventListener("click", async ev => {
+  const id = ev.target.dataset.ok || ev.target.dataset.no;
+  if (!id) return;
+  const approved = !!ev.target.dataset.ok;
+  const field = document.querySelector('[data-val="' + id + '"]');
+  const body = { approved: approved, actor: "user", source: "web" };
+  // Only send an edit when it actually changed: an edited value gets a new fingerprint, so
+  // the approval authorises exactly what is on screen and nothing else.
+  if (approved && field && field.value !== field.defaultValue) body.edited_value = field.value;
+
+  ev.target.disabled = true;
+  try {
+    await api("/approvals/" + id + "/resolve", { method: "POST", body: JSON.stringify(body) });
+    fail("");
+  } catch (e) { fail(String(e)); }
+  await renderApprovals();
+});
+
+function attachStream(id) {
+  if (source) source.close();
+  seen = new Set();
+  lastShot = null;
+  $("log").innerHTML = "";
+  source = new EventSource("/agent/runs/" + id + "/events");
+
+  const onEvent = e => {
+    if (!e.data || e.data === "{}") return;
+    const ev = JSON.parse(e.data);
+    if (seen.has(ev.seq)) return;   // a reconnect replays the backlog
+    seen.add(ev.seq);
+    appendLog(ev);
+  };
+  // The server names each event by its type, so a generic listener is not enough.
+  ["run_started", "observation", "decision", "policy_verdict", "action_result",
+   "approval_requested", "approval_resolved", "state_changed", "run_paused",
+   "run_resumed", "run_finished", "run_failed", "kill_switch", "log"
+  ].forEach(t => source.addEventListener(t, onEvent));
+  source.onmessage = onEvent;
+}
+
+function appendLog(ev) {
+  const log = $("log");
+  const row = document.createElement("div");
+  row.innerHTML =
+      '<span class="t">' + new Date(ev.ts).toLocaleTimeString([], { hour12: false }) + "</span>"
+    + '<span class="a">' + esc(ev.agent) + "</span>"
+    + '<span class="k ' + ev.type + '">' + ev.type + "</span>"
+    + '<span class="m">' + esc(ev.message) + "</span>";
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+
+  if (ev.payload && ev.payload.page_kind) $("t-page").textContent = ev.payload.page_kind;
+  if (ev.payload && ev.payload.screenshot_id && ev.payload.screenshot_id !== lastShot) {
+    lastShot = ev.payload.screenshot_id;
+    $("shot").innerHTML = '<img src="/screenshots/' + lastShot + '.png" alt="What the agent sees">';
+  }
+}
+
+$("b-start").onclick = async () => {
+  fail("");
+  try {
+    const r = await api("/agent/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        start_url: $("url").value,
+        job_title: "AI Engineer",
+        company: "Northwind Analytics"
+      })
+    });
+    runId = r.run_id;
+    attachStream(runId);
+  } catch (e) { fail(String(e)); }
+};
+
+const control = action => async () => {
+  if (!runId) return;
+  try { await api("/agent/runs/" + runId + "/" + action, { method: "POST" }); }
+  catch (e) { fail(String(e)); }
+};
+$("b-pause").onclick = control("pause");
+$("b-resume").onclick = control("resume");
+$("b-stop").onclick = control("stop");
+
+$("b-kill").onclick = async () => {
+  await api("/agent/kill-switch", {
+    method: "POST", body: JSON.stringify({ reason: "Stopped from the dashboard" })
+  });
+  poll();
+};
+$("b-rearm").onclick = async () => {
+  await api("/agent/kill-switch/reset", { method: "POST" });
+  poll();
+};
+
+// Reattach to whatever is already running, so a refresh does not lose the view.
+(async () => {
+  try {
+    const runs = await api("/agent/runs");
+    const live = runs.filter(r => ["finished", "failed", "stopped"].indexOf(r.status) < 0).pop()
+                 || runs.pop();
+    if (live) { runId = live.run_id; attachStream(runId); }
+  } catch (e) { /* no runs yet */ }
+  poll();
+  setInterval(poll, 2000);
+})();
+</script>
+</body>
+</html>
