@@ -412,6 +412,11 @@ class RunManager:
             self._mark_handled(handle, observation, decision)
             return False
 
+        if decision.action is ActionType.SUBMIT:
+            # Surfaced *before* the approval card, so you can see what was left blank while
+            # deciding whether to submit -- not after you have already said yes.
+            await self._warn_unfilled_required(handle, observation)
+
         if verdict.outcome is PolicyOutcome.REQUIRE_APPROVAL:
             approved, decision = await self._await_approval(
                 handle, observation, decision, verdict
@@ -434,7 +439,6 @@ class RunManager:
                 return False
 
         if decision.action is ActionType.SUBMIT:
-            await self._warn_unfilled_required(handle, observation)
             await self._transition(handle, S.SUBMITTING, tolerant=True)
 
         assert handle.session is not None
@@ -487,11 +491,14 @@ class RunManager:
         approval.fingerprint = decision_fingerprint(decision)
         await self._save(approval)
 
-        pending = PendingApproval(approval_id=approval.id, decision=decision)
-        handle.pending = pending
+        # State first, then expose the pending approval: a client that sees `pending` set must
+        # already see REVIEW_REQUIRED, never an in-between.
         handle.status = "waiting_approval"
         await self._transition(handle, S.SAFE_FIELDS_FILLED, tolerant=True)
         await self._transition(handle, S.REVIEW_REQUIRED, tolerant=True)
+
+        pending = PendingApproval(approval_id=approval.id, decision=decision)
+        handle.pending = pending
 
         await self._bus.emit(
             handle.run_id,

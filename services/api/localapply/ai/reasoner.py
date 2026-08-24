@@ -105,7 +105,7 @@ class StubReasoner(Reasoner):
             return self._work_the_form(observation, context)
 
         apply_button = self._find(observation, _APPLY_RE, {ElementRole.BUTTON, ElementRole.LINK})
-        if apply_button is not None:
+        if apply_button is not None and normalise(apply_button.name) not in context.handled_fields:
             return Decision(
                 action=ActionType.CLICK,
                 target_ref=apply_button.ref,
@@ -141,7 +141,7 @@ class StubReasoner(Reasoner):
                 return decision
 
         submit = self._find(observation, _SUBMIT_RE, {ElementRole.BUTTON})
-        if submit is not None:
+        if submit is not None and normalise(submit.name) not in context.handled_fields:
             return Decision(
                 action=ActionType.SUBMIT,
                 target_ref=submit.ref,
@@ -149,10 +149,16 @@ class StubReasoner(Reasoner):
                 reason="Every field the agent can fill is complete; requesting approval to submit.",
             )
 
+        # A submit that was already attempted -- or that you rejected -- must not be proposed
+        # again, or the run would ask forever.
         return Decision(
             action=ActionType.FINISH,
             confidence=0.6,
-            reason="Form is filled but no submit control was found.",
+            reason=(
+                "Submit was declined; stopping."
+                if submit is not None
+                else "Form is filled but no submit control was found."
+            ),
         )
 
     def _fill(

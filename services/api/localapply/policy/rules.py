@@ -11,6 +11,7 @@ import hashlib
 from dataclasses import dataclass, field
 
 from ..contracts import (
+    MUTATING_ACTIONS,
     TARGETED_ACTIONS,
     ActionType,
     Decision,
@@ -184,8 +185,6 @@ def r011_review_required_field(d: Decision, o: Observation, c: RunContext) -> Po
 
 
 def r012_low_confidence(d: Decision, o: Observation, c: RunContext) -> PolicyVerdict | None:
-    from ..contracts import MUTATING_ACTIONS
-
     if d.action in MUTATING_ACTIONS and d.confidence < c.min_confidence:
         return _gate(
             "R012_LOW_CONFIDENCE",
@@ -197,8 +196,6 @@ def r012_low_confidence(d: Decision, o: Observation, c: RunContext) -> PolicyVer
 def r013_intervention_page(d: Decision, o: Observation, c: RunContext) -> PolicyVerdict | None:
     """CAPTCHAs and login walls are handed to the human, never solved or worked around.
     That is both the honest engineering choice and the correct one."""
-    from ..contracts import MUTATING_ACTIONS
-
     if o.page_kind in {PageKind.CAPTCHA, PageKind.LOGIN} and d.action in MUTATING_ACTIONS:
         return _gate(
             "R013_INTERVENTION_PAGE",
