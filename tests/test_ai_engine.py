@@ -332,11 +332,26 @@ def test_prompt_forbids_invention_when_there_is_no_profile(reasoner, observation
     assert "Do not invent any value" in prompt
 
 
-def test_prompt_lists_fields_already_dealt_with(reasoner, observation):
-    context = ReasoningContext(handled_fields={"first name", "email address"})
-    prompt = reasoner.build_prompt(observation, context)
-    assert "ALREADY DEALT WITH" in prompt
-    assert "first name" in prompt
+def test_completed_fields_are_removed_from_the_table_not_annotated(reasoner, observation):
+    """Found by running a real model: told in the prompt not to re-pick a completed field,
+    a 7B model re-picked it 42 times until the action budget stopped the run. The model
+    cannot choose what it cannot see."""
+    fresh = reasoner.build_prompt(observation, ReasoningContext())
+    assert "First name" in fresh
+
+    after = reasoner.build_prompt(
+        observation, ReasoningContext(handled_fields={"first name"})
+    )
+    assert "First name" not in after
+    # The untouched element is still offered.
+    assert "Apply for this role" in after
+
+
+def test_a_fully_handled_page_tells_the_model_to_move_on(reasoner, observation):
+    prompt = reasoner.build_prompt(
+        observation, ReasoningContext(handled_fields={"first name", "apply for this role"})
+    )
+    assert "nothing left to interact with" in prompt
 
 
 # --------------------------------------------------------------------------------------
@@ -418,3 +433,57 @@ def test_the_run_loop_populates_known_values_from_accepted_facts():
 
     assert "haidar" in known
     assert "usd 5,200 / month" in known
+
+
+def test_repeating_a_fill_is_denied(engine, make_element, make_observation,
+                                    application_context):
+    """R015, the loop backstop. The prompt fix stops the model proposing this; the rule
+    means a future prompt regression degrades to "stops early" rather than "burns the whole
+    action budget on one field"."""
+    from localapply.contracts import PolicyOutcome
+    from localapply.policy.rules import action_signature
+
+    observation = make_observation([make_element(ref="e1", name="First name")])
+    decision = _type(value="Haidar")
+
+    first = engine.evaluate(decision, observation, application_context)
+    assert first.outcome is PolicyOutcome.ALLOW
+
+    # The run loop records this once the action has actually executed.
+    application_context.executed_signatures.add(action_signature(decision, observation))
+
+    second = engine.evaluate(decision, observation, application_context)
+    assert second.outcome is PolicyOutcome.DENY
+    assert second.rule_id == "R015_ALREADY_DONE"
+
+
+def test_a_different_value_for_the_same_field_is_still_allowed(engine, make_element,
+                                                               make_observation,
+                                                               application_context):
+    """Correcting a value must not be mistaken for a loop."""
+    from localapply.contracts import PolicyOutcome
+    from localapply.policy.rules import action_signature
+
+    observation = make_observation([make_element(ref="e1", name="First name")])
+    application_context.executed_signatures.add(
+        action_signature(_type(value="Haidar"), observation)
+    )
+
+    verdict = engine.evaluate(_type(value="Haydar"), observation, application_context)
+    assert verdict.outcome is not PolicyOutcome.DENY
+
+
+def test_repeated_clicks_are_not_blocked(engine, make_element, make_observation,
+                                         application_context):
+    """"Next" on a multi-page form is the same element name every time, so click repeats
+    must stay legal."""
+    from localapply.contracts import ActionType, Decision, PolicyOutcome
+    from localapply.policy.rules import action_signature
+
+    observation = make_observation(
+        [make_element(ref="e1", name="Next", role=ElementRole.BUTTON)]
+    )
+    click = Decision(action=ActionType.CLICK, target_ref="e1", confidence=0.9, reason="next")
+    application_context.executed_signatures.add(action_signature(click, observation))
+
+    assert engine.evaluate(click, observation, application_context).outcome is PolicyOutcome.ALLOW
