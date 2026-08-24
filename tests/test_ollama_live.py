@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 
 import pytest
-
 from localapply.ai.interface import ModelRole
 from localapply.ai.providers.ollama import OllamaProvider
 from localapply.ai.reasoner import LLMReasoner, ReasoningContext

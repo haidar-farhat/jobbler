@@ -230,13 +230,15 @@ What is covered:
 | `test_cv_import_api.py` | Upload proposes but accepts nothing; the reasoner cannot see a proposed fact; accepting a conflict supersedes rather than deletes |
 | `test_generation.py` | Grounding refuses an item citing nothing or citing an unaccepted fact; proposed/rejected/superseded facts never render; tailoring never adds |
 | `test_generation_api.py` | Versions increment and never overwrite; provenance flags facts that changed after sending; the PDF is a real PDF whose text omits skills you lack |
+| `test_ai_engine.py` | An invented ref never becomes an action; junk output retries then asks; a dead model pauses rather than crashes; a hallucinated skill in a rewrite is rejected and the original kept |
+| `test_ollama_live.py` | Opt-in: can a real small model return one JSON object naming a real ref, and does it invent skills when rewriting |
 
 ## Verified
 
 Run end to end on 2026-08-24 against Python 3.14.7, Postgres 16, Redis 7, Chromium 1234:
 
 ```
-196 passed in 50.55s
+216 passed in 48.19s
 ```
 
 A live run driven through the HTTP API, approvals submitted with `source=phone`:
@@ -337,11 +339,63 @@ What follows from that:
 The deterministic writer reads plainly rather than eloquently. That is the honest trade for
 being unable to invent.
 
+## The AI engine
+
+Set `LA_REASONER=ollama` and the same loop runs on a local model instead of the scripted
+reasoner. Nothing else changes: `LLMReasoner` implements the identical interface, and every
+policy rule, approval gate and grounding check stays exactly where it was.
+
+**The model is contained by construction, not by instruction:**
+
+- It may name only a ref from the element table it was shown. An invented ref, or a CSS
+  selector, is rejected before it can become a `Decision` — the same `R002` guarantee, now
+  enforced at the model boundary too.
+- Unparseable output gets **one corrective retry**, then becomes `ask_user`. A small local
+  model narrating around its JSON should not stall a run; a model that cannot comply should
+  not guess.
+- A model that is **down** pauses the run and says so, naming Ollama, rather than crashing.
+- Page text still arrives inside `<UNTRUSTED_WEB_CONTENT>`, and policy still contains no
+  model — so a compromised reasoner can at worst produce a proposal that policy rejects.
+
+### Model-written documents
+
+With **Polish with model** ticked, generation stays deterministic and the model becomes a
+*rewriter*, not an author. The plan is built from accepted facts first — grounded by
+construction — and the model is then handed one line at a time and asked to say the same
+thing better. It cannot add an item, a section, or a fact reference, because it is never
+given the chance to.
+
+That leaves exactly one failure mode: a rewritten sentence saying more than its source did.
+`claims.check_claims` catches that — it flags any technology named in the prose that the
+supporting facts do not mention, and any invented figure ("led a team of 40"). A flagged
+rewrite is discarded, the original wording kept, and the dashboard **tells you it was
+overruled** rather than silently dropping it.
+
+This is a mitigation, not a proof. It catches named technologies from a known vocabulary; it
+cannot catch every embellishment. That is precisely why the model only ever rephrases a fixed
+set of facts, why the deterministic writer stays the default, and why nothing is sent without
+your review.
+
+### On 8 GB
+
+`ai/router.py` loads one large model at a time under an exclusive lock. `/health` reports
+what is actually resident, VRAM in use, and how many swaps have happened — real operational
+state, not a config echo. A 7-8B Q4 reasoner is the realistic ceiling on this card and will
+be noticeably slower than the scripted reasoner.
+
+```bash
+pytest              # 216 tests, no model needed
+pytest -m ollama    # 5 live checks against a running Ollama
+```
+
+The live suite is opt-in and skips itself cleanly when Ollama is not running. It asks the
+question the scripted tests cannot: whether a small local model can reliably return one JSON
+object naming a real ref.
+
 ## Not built yet
 
-Local model inference (Phase 4) · real job-board discovery (Phase 6) · React Native app
-(Phase 9) · WireGuard remote access (Phase 10). Each has an interface stub so it drops in
-without a refactor.
+Real job-board discovery (Phase 6) · React Native app (Phase 9) · WireGuard remote access
+(Phase 10). Each has an interface stub so it drops in without a refactor.
 
 ### On real job sites
 
