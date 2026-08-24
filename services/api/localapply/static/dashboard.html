@@ -569,9 +569,10 @@ document.querySelectorAll("[data-gen]").forEach(button => {
                     + w.rejected.map(esc).join("<br>"));
         }
         if (w.critique) {
+          // split/join rather than a regex literal: this line has been broken twice by
+          // an escaped newline collapsing into a real one, which kills the whole script.
           bits.push("<b>Its own critique:</b><br>"
-                    + esc(w.critique).replace(/
-/g, "<br>"));
+                    + esc(w.critique).split("\n").join("<br>"));
         }
         $("gen-detail").innerHTML = bits.join("<br><br>");
         $("gen-detail").style.display = "block";
