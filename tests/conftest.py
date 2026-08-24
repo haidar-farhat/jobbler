@@ -45,6 +45,21 @@ def settings():
     return get_settings()
 
 
+@pytest.fixture
+def fixtures_dir() -> Path:
+    return FIXTURES
+
+
+@pytest.fixture
+def job_url() -> str:
+    return JOB_FIXTURE_URL
+
+
+@pytest.fixture
+def apply_url() -> str:
+    return APPLY_FIXTURE_URL
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def database(settings):
     from localapply.db.session import create_all, dispose_engine, init_engine
@@ -133,12 +148,25 @@ async def browser_manager(settings):
     await manager.stop()
 
 
+@pytest.fixture
+def event_bus():
+    from localapply.events.bus import EventBus
+
+    return EventBus()
+
+
 @pytest_asyncio.fixture
-async def run_manager(settings, browser_manager):
+async def observer(settings):
+    from localapply.browser.observer import Observer
+
+    return Observer(settings)
+
+
+@pytest_asyncio.fixture
+async def run_manager(settings, browser_manager, event_bus):
     from localapply.ai.reasoner import StubReasoner
     from localapply.browser.executor import BrowserExecutor
     from localapply.browser.observer import Observer
-    from localapply.events.bus import EventBus
     from localapply.orchestrator.run_loop import RunManager
     from localapply.policy.engine import PolicyEngine
 
@@ -149,7 +177,7 @@ async def run_manager(settings, browser_manager):
         reasoner=StubReasoner(),
         policy=PolicyEngine(),
         executor=BrowserExecutor(settings),
-        bus=EventBus(),
+        bus=event_bus,
     )
 
 
