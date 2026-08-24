@@ -49,6 +49,22 @@ from .state_machine import ApplicationState, InvalidTransition, transition
 S = ApplicationState
 
 
+def _known_values(reasoning: ReasoningContext) -> set[str]:
+    """Every value the agent is permitted to enter, normalised for comparison.
+
+    Drawn from accepted facts only -- `load_reasoning_context` has already filtered out
+    proposals -- so this doubles as the boundary that keeps an unreviewed CV extraction out
+    of a form.
+    """
+    values = list(reasoning.profile.values()) + list(reasoning.drafts.values())
+    known: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        known.add(" ".join(value.split()).casefold())
+    return known
+
+
 @dataclass
 class PendingApproval:
     approval_id: UUID
@@ -171,6 +187,7 @@ class RunManager:
                 max_actions=self._settings.max_actions_per_run,
                 min_confidence=self._settings.min_decision_confidence,
                 dry_run=self._settings.dry_run,
+                known_values=_known_values(reasoning),
             ),
         )
         handle.resume_signal.set()

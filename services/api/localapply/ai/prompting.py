@@ -49,6 +49,50 @@ def wrap_untrusted(text: str, *, limit: int = 8000) -> str:
     return f"{_OPEN}\n{cleaned}\n{_CLOSE}"
 
 
+#: What each action means, in the model's own vocabulary. An earlier prompt showed
+#: `{"action": ...}` without enumerating the options, and the model reliably invented
+#: plausible names ("fill_textbox" instead of "type") that failed validation every time.
+#: The vocabulary must be stated, not assumed.
+ACTION_MENU: dict[str, str] = {
+    "click": "click a button or link (needs target_ref)",
+    "type": "type text into a field (needs target_ref and value)",
+    "select": "choose an option in a dropdown (needs target_ref and value)",
+    "upload": "attach a file to a file input (needs target_ref and value)",
+    "submit": "submit the application (needs target_ref of the submit button)",
+    "navigate": "go to a URL (needs value)",
+    "scroll": "scroll further down the page",
+    "wait": "wait briefly for the page to settle",
+    "ask_user": "stop and ask the person for help",
+    "finish": "nothing further to do here",
+}
+
+
+def render_action_menu() -> str:
+    lines = ["ACTIONS -- use exactly one of these strings, spelled exactly as shown:"]
+    lines += [f"  {name:<10} {description}" for name, description in ACTION_MENU.items()]
+    lines += [
+        "",
+        "Reply with ONE JSON object and nothing else:",
+        '{"action": "<one of the above>", "target_ref": "<a ref from the table, or null>", '
+        '"value": "<text, or null>", "confidence": <0.0-1.0>, "reason": "<short>"}',
+    ]
+    return "\n".join(lines)
+
+
+def render_profile(profile: dict[str, str], drafts: dict[str, str]) -> str:
+    """The candidate's verified details, for filling fields.
+
+    Only accepted facts reach here (see api.routes.profile.load_reasoning_context), so this
+    is the complete set of values the agent is permitted to enter.
+    """
+    lines = []
+    for key, value in sorted(profile.items()):
+        lines.append(f"  {key:<16} {value}")
+    for key, value in sorted(drafts.items()):
+        lines.append(f"  {key:<16} {value}   (draft -- needs the person's confirmation)")
+    return "\n".join(lines) or "  (none)"
+
+
 def render_element_table(elements) -> str:
     """The element table is the model's entire vocabulary for addressing the page."""
     if not elements:

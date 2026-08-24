@@ -48,6 +48,9 @@ class RunContext:
     dry_run: bool = True
     #: Fingerprints a human has explicitly approved this run.
     granted_approvals: set[str] = field(default_factory=set)
+    #: Normalised values drawn from accepted profile facts and drafts. Empty means "we do
+    #: not know", and R014 stays silent rather than blocking every field.
+    known_values: set[str] = field(default_factory=set)
 
     def grant(self, decision: Decision) -> None:
         self.granted_approvals.add(decision_fingerprint(decision))
@@ -207,6 +210,48 @@ def r012_low_confidence(d: Decision, o: Observation, c: RunContext) -> PolicyVer
     return None
 
 
+def _normalise_value(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def r014_value_not_from_profile(
+    d: Decision, o: Observation, c: RunContext
+) -> PolicyVerdict | None:
+    """A value typed into a field must come from the profile, not from the model.
+
+    Added after wiring a real model in: asked to fill "First name" without being shown the
+    candidate's details, it confidently produced "JohnDoe". Every other rule passed -- the
+    field is SAFE_AUTOFILL, the confidence was high, the ref was real -- so nothing stood
+    between an invented identity and a submitted application.
+
+    The prompt now includes the profile, which fixes the cause. This rule exists because a
+    prompt is a request and policy is a guarantee: if a model ever invents a value again,
+    it stops here and asks you instead of typing it.
+    """
+    if d.action not in {ActionType.TYPE, ActionType.SELECT}:
+        return None
+    if not d.value or not d.value.strip():
+        return None
+    # Only meaningful when we know what the profile contains.
+    if not c.known_values:
+        return None
+
+    candidate = _normalise_value(d.value)
+    # Accept an exact match, or a value contained in a known fact (a first name drawn from
+    # a full name), or one that contains a known value (an address built around a city).
+    for known in c.known_values:
+        if candidate == known or candidate in known or known in candidate:
+            return None
+
+    element = o.element(d.target_ref) if d.target_ref else None
+    name = element.name if element else d.target_ref
+    return _gate(
+        "R014_VALUE_NOT_FROM_PROFILE",
+        f"The value {d.value!r} for {name!r} does not come from your profile. "
+        "Confirm it, or correct it, before it is entered.",
+    )
+
+
 def r013_intervention_page(d: Decision, o: Observation, c: RunContext) -> PolicyVerdict | None:
     """CAPTCHAs and login walls are handed to the human, never solved or worked around.
     That is both the honest engineering choice and the correct one."""
@@ -223,4 +268,5 @@ APPROVAL_RULES = [
     r011_review_required_field,
     r012_low_confidence,
     r013_intervention_page,
+    r014_value_not_from_profile,
 ]

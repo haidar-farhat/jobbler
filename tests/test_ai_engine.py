@@ -292,3 +292,129 @@ async def test_polish_never_touches_the_contact_block(facts, router, provider):
 
     contact = next(s for s in polished.sections if s.heading == "Contact")
     assert contact.items[0].text == "header"
+
+
+# --------------------------------------------------------------------------------------
+# Prompt contents
+#
+# Both of these were found by running a real model, not by reading the code. The prompt
+# showed `{"action": ...}` without listing the options, so the model reliably invented
+# "fill_textbox"; and it never included the profile, so the model invented "JohnDoe" for a
+# First name field.
+# --------------------------------------------------------------------------------------
+
+
+def test_prompt_enumerates_the_action_vocabulary(reasoner, observation):
+    prompt = reasoner.build_prompt(observation, ReasoningContext())
+
+    for action in ("click", "type", "select", "upload", "submit", "ask_user", "finish"):
+        assert f"  {action}" in prompt, f"{action} missing from the action menu"
+    assert "spelled exactly as shown" in prompt
+
+
+def test_prompt_includes_the_profile_so_values_need_not_be_invented(reasoner, observation):
+    context = ReasoningContext(
+        profile={"first_name": "Haidar", "email": "haidar@example.com"},
+        drafts={"salary": "USD 5,200 / month"},
+    )
+    prompt = reasoner.build_prompt(observation, context)
+
+    assert "Haidar" in prompt
+    assert "haidar@example.com" in prompt
+    assert "USD 5,200 / month" in prompt
+    assert "invent nothing" in prompt
+    # A draft must be marked as needing confirmation, not presented as settled fact.
+    assert "needs the person's confirmation" in prompt
+
+
+def test_prompt_forbids_invention_when_there_is_no_profile(reasoner, observation):
+    prompt = reasoner.build_prompt(observation, ReasoningContext())
+    assert "Do not invent any value" in prompt
+
+
+def test_prompt_lists_fields_already_dealt_with(reasoner, observation):
+    context = ReasoningContext(handled_fields={"first name", "email address"})
+    prompt = reasoner.build_prompt(observation, context)
+    assert "ALREADY DEALT WITH" in prompt
+    assert "first name" in prompt
+
+
+# --------------------------------------------------------------------------------------
+# R014 -- the structural backstop for an invented value
+# --------------------------------------------------------------------------------------
+
+
+def _type(ref="e1", value="x", confidence=0.95):
+    from localapply.contracts import ActionType, Decision
+
+    return Decision(
+        action=ActionType.TYPE, target_ref=ref, value=value, confidence=confidence,
+        reason="test",
+    )
+
+
+def test_a_value_not_in_the_profile_is_gated(engine, make_element, make_observation,
+                                             application_context):
+    """The exact failure a real model produced: 'JohnDoe' into First name. Every other rule
+    passes -- safe field, high confidence, real ref -- so this is the only thing between an
+    invented identity and a submitted application."""
+    application_context.known_values = {"haidar", "farhat", "haidar@example.com"}
+    observation = make_observation([make_element(ref="e1", name="First name")])
+
+    verdict = engine.evaluate(_type(value="JohnDoe"), observation, application_context)
+
+    from localapply.contracts import PolicyOutcome
+
+    assert verdict.outcome is PolicyOutcome.REQUIRE_APPROVAL
+    assert verdict.rule_id == "R014_VALUE_NOT_FROM_PROFILE"
+    assert "JohnDoe" in verdict.reason
+
+
+def test_a_value_from_the_profile_is_allowed(engine, make_element, make_observation,
+                                             application_context):
+    from localapply.contracts import PolicyOutcome
+
+    application_context.known_values = {"haidar", "haidar@example.com"}
+    observation = make_observation([make_element(ref="e1", name="First name")])
+
+    verdict = engine.evaluate(_type(value="Haidar"), observation, application_context)
+    assert verdict.outcome is PolicyOutcome.ALLOW
+
+
+def test_a_name_drawn_from_a_fuller_fact_is_allowed(engine, make_element, make_observation,
+                                                    application_context):
+    """"Haidar" typed into First name when the profile stores "Haidar Farhat"."""
+    from localapply.contracts import PolicyOutcome
+
+    application_context.known_values = {"haidar farhat"}
+    observation = make_observation([make_element(ref="e1", name="First name")])
+
+    verdict = engine.evaluate(_type(value="Haidar"), observation, application_context)
+    assert verdict.outcome is PolicyOutcome.ALLOW
+
+
+def test_the_rule_stays_silent_when_the_profile_is_unknown(engine, make_element,
+                                                           make_observation,
+                                                           application_context):
+    """Empty means "we do not know", not "nothing is allowed" -- otherwise every field on a
+    profile-less run would stop for approval."""
+    from localapply.contracts import PolicyOutcome
+
+    application_context.known_values = set()
+    observation = make_observation([make_element(ref="e1", name="First name")])
+
+    verdict = engine.evaluate(_type(value="anything"), observation, application_context)
+    assert verdict.outcome is PolicyOutcome.ALLOW
+
+
+def test_the_run_loop_populates_known_values_from_accepted_facts():
+    from localapply.orchestrator.run_loop import _known_values
+
+    context = ReasoningContext(
+        profile={"first_name": "Haidar", "email": "haidar@example.com"},
+        drafts={"salary": "USD 5,200 / month"},
+    )
+    known = _known_values(context)
+
+    assert "haidar" in known
+    assert "usd 5,200 / month" in known

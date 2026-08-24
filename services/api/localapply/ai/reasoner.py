@@ -19,7 +19,13 @@ from dataclasses import dataclass, field
 
 from ..contracts import ActionType, Decision, ElementRole, Observation, ObservedElement, PageKind
 from ..policy.field_classifier import Classification, FieldClass, classify
-from .prompting import REASONER_SYSTEM_PROMPT, render_element_table, wrap_untrusted
+from .prompting import (
+    REASONER_SYSTEM_PROMPT,
+    render_action_menu,
+    render_element_table,
+    render_profile,
+    wrap_untrusted,
+)
 
 _APPLY_RE = re.compile(r"\b(easy\s*)?apply\b|apply now|start (your )?application", re.IGNORECASE)
 _SUBMIT_RE = re.compile(
@@ -223,19 +229,37 @@ class LLMReasoner(Reasoner):
         self._router = router
 
     def build_prompt(self, observation: Observation, context: ReasoningContext) -> str:
-        return "\n\n".join(
-            [
-                f"GOAL: {context.goal}",
-                f"PAGE: {observation.page_kind.value} at {observation.url}",
-                f"TITLE: {observation.title}",
-                "ELEMENTS (address these by ref, and only these):",
-                render_element_table(observation.elements),
-                "PAGE TEXT:",
-                wrap_untrusted(observation.untrusted_text),
-                'Reply with JSON only: {"action": ..., "target_ref": ..., "value": ..., '
-                '"confidence": 0.0-1.0, "reason": ...}',
-            ]
-        )
+        parts = [
+            f"GOAL: {context.goal}",
+            f"PAGE: {observation.page_kind.value} at {observation.url}",
+            f"TITLE: {observation.title}",
+            "ELEMENTS (address these by ref, and only these):",
+            render_element_table(observation.elements),
+        ]
+
+        # Without this the model has to invent values, and it does -- "JohnDoe" typed into a
+        # real First name field. Give it the actual facts, and forbid anything else.
+        if context.profile or context.drafts:
+            parts += ["CANDIDATE DETAILS (use these values verbatim; invent nothing):",
+                      render_profile(context.profile, context.drafts)]
+        else:
+            parts.append(
+                "CANDIDATE DETAILS: none available. Do not invent any value; "
+                "choose ask_user if a field needs one."
+            )
+
+        if context.handled_fields:
+            parts.append(
+                "ALREADY DEALT WITH (do not choose these again): "
+                + ", ".join(sorted(context.handled_fields))
+            )
+
+        parts += [
+            "PAGE TEXT:",
+            wrap_untrusted(observation.untrusted_text),
+            render_action_menu(),
+        ]
+        return "\n\n".join(parts)
 
     #: One corrective retry. A small local model quite often returns prose around the JSON
     #: on its first attempt and gets it right when told exactly what was wrong -- cheaper
