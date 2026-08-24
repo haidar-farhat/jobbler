@@ -226,13 +226,15 @@ What is covered:
 | `test_model_router.py` | Reasoning and vision models are never co-resident on the 8 GB card |
 | `test_browser.py` | Ref enumeration, stale-ref invalidation, kill switch, dry-run submit |
 | `test_loop_integration.py` | `agent_events` survives the run and can replay every ref from the stored element table |
+| `test_cv_import.py` | Extraction, section splitting, and reconciliation; a corrupt file and a text-free one report *different* failures |
+| `test_cv_import_api.py` | Upload proposes but accepts nothing; the reasoner cannot see a proposed fact; accepting a conflict supersedes rather than deletes |
 
 ## Verified
 
 Run end to end on 2026-08-24 against Python 3.14.7, Postgres 16, Redis 7, Chromium 1234:
 
 ```
-117 passed in 41.43s
+159 passed in 42.92s
 ```
 
 A live run driven through the HTTP API, approvals submitted with `source=phone`:
@@ -267,12 +269,43 @@ docs/                Architecture and ADRs
 tests/
 ```
 
+## Importing a CV
+
+Open **Profile & CV**, upload a PDF, `.docx` or text CV, and every fact found comes back as
+a **proposal** with the confidence and the source line it came from. Nothing reaches an
+application until you accept it, one fact at a time.
+
+The sample CV yields 34 proposals: contact details, current title, 20-odd skills, two roles,
+education, and a certification.
+
+A fact has exactly one gate — its status:
+
+| status | meaning |
+|---|---|
+| `accepted` | you approved it; **the only status the agent may use** |
+| `proposed` | extracted, awaiting your decision; invisible to the agent |
+| `rejected` | you declined it; remembered, so a re-import does not ask again |
+| `superseded` | replaced by a newer accepted fact; kept as history |
+
+Behaviours worth knowing:
+
+- **A changed value is a conflict, not an overwrite.** If your CV has a new email and you
+  already accepted one, the proposal shows what it would replace, and the old value stays
+  live until you accept the new one.
+- **Bulk accept never touches conflicts.** `POST /documents/{id}/accept-all` takes
+  `category` and `min_confidence` filters and skips anything that would replace a fact you
+  already confirmed — that decision is not one to make in bulk.
+- **Re-uploading the same file is recognised** by content hash rather than duplicated.
+- **An unreadable file says so.** A scanned, image-only CV fails with an explicit message
+  rather than silently producing an empty profile; there is no OCR here.
+- Extraction is rule-based and deterministic. When a model-backed parser lands it feeds the
+  *same* review queue: a model may propose facts, never accept them.
+
 ## Not built yet
 
-CV parsing and the knowledge graph (Phase 2) · document generation (Phase 3) · local model
-inference (Phase 4) · real job-board discovery (Phase 6) · React Native app (Phase 9) ·
-WireGuard remote access (Phase 10). Each has an interface stub so it drops in without a
-refactor.
+Document generation (Phase 3) · local model inference (Phase 4) · real job-board discovery
+(Phase 6) · React Native app (Phase 9) · WireGuard remote access (Phase 10). Each has an
+interface stub so it drops in without a refactor.
 
 ### On real job sites
 
