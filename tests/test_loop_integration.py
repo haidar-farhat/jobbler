@@ -305,3 +305,64 @@ async def test_pause_stops_between_actions_not_mid_action(run_manager, started_r
 
     await run_manager.resume(started_run.run_id)
     assert started_run.status == "running"
+
+
+# --------------------------------------------------------------------------------------
+# Durable audit trail
+# --------------------------------------------------------------------------------------
+
+
+async def stored_events(run_id: UUID) -> list[m.AgentEventRow]:
+    async with session_factory()() as session:
+        result = await session.execute(
+            select(m.AgentEventRow)
+            .where(m.AgentEventRow.run_id == run_id)
+            .order_by(m.AgentEventRow.seq)
+        )
+        return list(result.scalars().all())
+
+
+async def test_events_are_persisted_not_just_streamed(run_manager, started_run, event_bus):
+    """The event log is the audit trail and the basis for replay, so it has to survive a
+    restart. An earlier version published to the in-memory bus only, leaving `agent_events`
+    empty while the docs claimed otherwise."""
+    await drive(run_manager, started_run)
+
+    rows = await stored_events(started_run.run_id)
+    streamed = event_bus.history(started_run.run_id)
+
+    assert rows, "agent_events must not be empty after a run"
+    assert len(rows) == len(streamed)
+    assert [r.seq for r in rows] == list(range(1, len(rows) + 1))
+
+    types = {r.type for r in rows}
+    assert {"observation", "decision", "policy_verdict", "action_result"} <= types
+
+
+async def test_persisted_events_can_reconstruct_a_ref(run_manager, started_run):
+    """Replay test: a ref named in a stored decision must resolve against the element table
+    stored with the observation that preceded it."""
+    await drive(run_manager, started_run)
+    rows = await stored_events(started_run.run_id)
+
+    elements: dict[str, str] = {}
+    resolved = 0
+    for row in rows:
+        if row.type == "observation":
+            elements = {e["ref"]: e["name"] for e in row.payload["elements"]}
+        elif row.type == "decision" and row.payload.get("target_ref"):
+            assert row.payload["target_ref"] in elements, (
+                f"ref {row.payload['target_ref']} unresolvable from the stored element table"
+            )
+            resolved += 1
+
+    assert resolved > 5, "expected several targeted decisions to replay"
+
+
+async def test_the_warning_about_hand_filled_fields_is_persisted(run_manager, started_run):
+    await drive(run_manager, started_run)
+    rows = await stored_events(started_run.run_id)
+
+    warnings = [r for r in rows if r.type == "log" and "Left for you" in r.message]
+    assert warnings, "the hand-fill warning must reach the durable log, not only the UI"
+    assert any("signature" in f.lower() for f in warnings[0].payload["fields"])

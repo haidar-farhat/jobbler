@@ -112,6 +112,23 @@ class RunManager:
         self._executor = executor
         self._bus = bus
         self._runs: dict[UUID, RunHandle] = {}
+        # `agent_events` is the durable audit trail and the source for post-hoc replay.
+        # Without this the stream would exist only in memory and vanish on restart.
+        bus.attach_sink(self._persist_event)
+
+    async def _persist_event(self, event) -> None:
+        await self._save(
+            m.AgentEventRow(
+                id=event.event_id,
+                run_id=event.run_id,
+                seq=event.seq,
+                type=event.type.value,
+                agent=event.agent,
+                message=event.message,
+                payload=event.payload,
+                ts=event.ts,
+            )
+        )
 
     # -- lifecycle ----------------------------------------------------------------------
 

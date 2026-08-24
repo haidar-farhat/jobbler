@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections import defaultdict, deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from uuid import UUID
 
 from ..contracts import AgentEvent, EventType
+
+logger = logging.getLogger(__name__)
 
 #: Events retained per run for late subscribers.
 BACKLOG_SIZE = 500
@@ -27,8 +30,15 @@ BACKLOG_SIZE = 500
 QUEUE_SIZE = 256
 
 
+#: Signature of a durable sink: called once per event, after `seq` is assigned.
+EventSink = Callable[[AgentEvent], Awaitable[None]]
+
+
 class EventBus:
-    def __init__(self) -> None:
+    def __init__(self, sink: EventSink | None = None) -> None:
+        #: Writes each event to durable storage. Without one the stream is memory-only,
+        #: which is fine for tests but means no replay after a restart.
+        self._sink: EventSink | None = sink
         self._subscribers: dict[UUID, set[asyncio.Queue[AgentEvent]]] = defaultdict(set)
         self._backlog: dict[UUID, deque[AgentEvent]] = defaultdict(
             lambda: deque(maxlen=BACKLOG_SIZE)
@@ -36,12 +46,24 @@ class EventBus:
         self._seq: dict[UUID, int] = defaultdict(int)
         self._lock = asyncio.Lock()
 
+    def attach_sink(self, sink: EventSink) -> None:
+        """Wire durable persistence. Done by the composition root, once."""
+        self._sink = sink
+
     async def publish(self, event: AgentEvent) -> AgentEvent:
         async with self._lock:
             self._seq[event.run_id] += 1
             event = event.model_copy(update={"seq": self._seq[event.run_id]})
             self._backlog[event.run_id].append(event)
             subscribers = list(self._subscribers.get(event.run_id, ()))
+
+        # Durable first, then fan out. A failed write must never take down the run, but it
+        # must be visible rather than silently dropping the audit trail.
+        if self._sink is not None:
+            try:
+                await self._sink(event)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("failed to persist agent event %s: %s", event.event_id, exc)
 
         for queue in subscribers:
             # Slow consumer: drop rather than stall the agent. The durable log in Postgres
