@@ -143,6 +143,19 @@ def skill_pattern(skill: str) -> re.Pattern[str]:
 
 _SKILL_PATTERNS = [(skill, skill_pattern(skill)) for skill in KNOWN_SKILLS]
 
+#: Boundary-free, longest first, for finding where a technology list begins inside a line
+#: that lost its spaces ("Brevet GPTPython, LLMs"). Names shorter than three characters are
+#: excluded: the vocabulary contains "R" and "Go", and matching those without boundaries
+#: would split on almost every word.
+_LOOSE_SKILL_RE = re.compile(
+    "|".join(
+        re.escape(skill)
+        for skill in sorted(KNOWN_SKILLS, key=len, reverse=True)
+        if len(skill) >= 3
+    ),
+    re.IGNORECASE,
+)
+
 #: Split a skills line into individual skills. The slash is a separator only when spaced:
 #: an unspaced one is usually part of the name ("CI/CD", "TCP/IP"), and splitting on it
 #: produced three bogus entries -- "CI", "CD" and "CI/CD" -- on the rendered CV.
@@ -494,7 +507,7 @@ def _structured_entries(lines: list[str], category: str, limit: int,
             continue
 
         role, organisation, dates = _split_headline(cleaned[0])
-        bullets = [line for line in cleaned[1:] if len(line) > 12][:6]
+        bullets = [_trim_to_word(line, 190) for line in cleaned[1:] if len(line) > 12][:6]
 
         headline = " — ".join(p for p in (role, organisation) if p) or cleaned[0]
         facts.append(
@@ -529,6 +542,31 @@ def _extract_education(sections: dict[str, list[str]]) -> list[ExtractedFact]:
     )
 
 
+def _trim_to_word(text: str, limit: int) -> str:
+    """Cut at a word boundary. Slicing mid-word left "...Brevet) curricu" on a real CV."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    return (cut[:space] if space > limit * 0.6 else cut).rstrip(" ,;.-") + "..."
+
+
+def _split_title_from_stack(line: str) -> tuple[str, str]:
+    """Separate a project name from the technology list run into it.
+
+    "Brevet GPTPython, LLMs, Prompt Engineering" -> ("Brevet GPT", "Python, LLMs, Prompt
+    Engineering"). The first known technology name marks where the stack begins.
+    """
+    # Loose matching, deliberately. The strict pattern requires a word boundary, so it
+    # cannot see "Python" inside "GPTPython" -- which is the whole case being handled.
+    match = _LOOSE_SKILL_RE.search(line)
+
+    # Only treat it as a stack if a real title precedes it.
+    if match is None or match.start() < 3:
+        return clean_line(line), ""
+    return clean_line(line[: match.start()]).rstrip(" ,;-–—"), clean_line(line[match.start():])
+
+
 def _extract_simple(sections: dict[str, list[str]], name: str, category: str,
                     confidence: float) -> list[ExtractedFact]:
     facts = []
@@ -541,6 +579,13 @@ def _extract_simple(sections: dict[str, list[str]], name: str, category: str,
         title, _, description = line.partition(" — ")
         if not description:
             title, _, description = line.partition(" - ")
+
+        # A project line often runs its name straight into its stack with no separator at
+        # all -- "Brevet GPTPython, LLMs, Prompt Engineering" -- because the PDF lost the
+        # space. Split at the first known technology name instead.
+        stack = ""
+        if not description:
+            title, stack = _split_title_from_stack(line)
         facts.append(
             ExtractedFact(
                 key=(title or line)[:80],
@@ -548,8 +593,11 @@ def _extract_simple(sections: dict[str, list[str]], name: str, category: str,
                 category=category,
                 confidence=confidence,
                 evidence=raw.strip()[:200],
-                detail={"title": clean_line(title or line)[:90],
-                        "description": clean_line(description)[:220]},
+                detail={
+                    "title": clean_line(title or line)[:90],
+                    "description": _trim_to_word(clean_line(description), 200),
+                    "stack": stack[:90],
+                },
             )
         )
     return facts
