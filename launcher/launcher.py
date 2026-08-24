@@ -365,7 +365,7 @@ def main() -> int:
     root = find_repo_root()
     print(dim(f"  {root}"))
 
-    total = 5 if args.no_seed else 6
+    total = 6 if args.no_seed else 7
     n = 1
 
     step(n, total, "Docker")
@@ -382,6 +382,10 @@ def main() -> int:
 
     step(n, total, "Database schema")
     ensure_schema(root, python)
+    n += 1
+
+    step(n, total, "AI engine")
+    check_ai_engine(root)
     n += 1
 
     if not args.no_seed:
