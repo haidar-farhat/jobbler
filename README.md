@@ -228,13 +228,15 @@ What is covered:
 | `test_loop_integration.py` | `agent_events` survives the run and can replay every ref from the stored element table |
 | `test_cv_import.py` | Extraction, section splitting, and reconciliation; a corrupt file and a text-free one report *different* failures |
 | `test_cv_import_api.py` | Upload proposes but accepts nothing; the reasoner cannot see a proposed fact; accepting a conflict supersedes rather than deletes |
+| `test_generation.py` | Grounding refuses an item citing nothing or citing an unaccepted fact; proposed/rejected/superseded facts never render; tailoring never adds |
+| `test_generation_api.py` | Versions increment and never overwrite; provenance flags facts that changed after sending; the PDF is a real PDF whose text omits skills you lack |
 
 ## Verified
 
 Run end to end on 2026-08-24 against Python 3.14.7, Postgres 16, Redis 7, Chromium 1234:
 
 ```
-159 passed in 42.92s
+196 passed in 50.55s
 ```
 
 A live run driven through the HTTP API, approvals submitted with `source=phone`:
@@ -301,11 +303,45 @@ Behaviours worth knowing:
 - Extraction is rule-based and deterministic. When a model-backed parser lands it feeds the
   *same* review queue: a model may propose facts, never accept them.
 
+## Generating documents
+
+Paste a job description into **Profile & CV** and generate a **tailored CV**, a **cover
+letter**, or the **master CV**. Output is HTML plus a real PDF, printed by the Chromium that
+Playwright already installs — no second rendering stack.
+
+Starting a run generates a CV for that specific job automatically and uploads *that* instead
+of a stale generic file. If generation fails, the run degrades to your existing CV and says
+so; a document problem must never turn into "could not apply".
+
+**Every line traces to an accepted fact.** Not by instruction — structurally. Each item in a
+document carries the ids of the facts backing it, and `assert_grounded` refuses to render a
+plan containing an item that cites nothing, or that cites a fact you have not accepted. That
+gate sits between generation and rendering, so the model-backed writer in Phase 4 passes
+through it unchanged: a model may rephrase your experience, it may not invent one.
+
+What follows from that:
+
+- **Tailoring selects and orders; it never rewrites.** A tailored CV's facts are always a
+  subset of the master's, so it cannot claim more than the canonical record. The master is
+  never modified as a side effect.
+- **A missing skill is never claimed.** Matching is deliberately pessimistic — a skill you
+  cannot evidence counts as missing, and the score is reported honestly. In the run above the
+  match reads **43%, "missing RAG, Docker"** purely because those facts had not been accepted
+  yet, even though they appear in the CV file.
+- **Nothing unaccepted leaks in.** Proposed, rejected, and superseded facts are all invisible
+  to generation, and there are tests for each.
+- **Versions are never overwritten**, so what you actually sent stays recoverable.
+  `GET /generate/{id}/provenance` lists the facts behind a document and flags any that have
+  changed since — a sent document does not silently update itself.
+
+The deterministic writer reads plainly rather than eloquently. That is the honest trade for
+being unable to invent.
+
 ## Not built yet
 
-Document generation (Phase 3) · local model inference (Phase 4) · real job-board discovery
-(Phase 6) · React Native app (Phase 9) · WireGuard remote access (Phase 10). Each has an
-interface stub so it drops in without a refactor.
+Local model inference (Phase 4) · real job-board discovery (Phase 6) · React Native app
+(Phase 9) · WireGuard remote access (Phase 10). Each has an interface stub so it drops in
+without a refactor.
 
 ### On real job sites
 
