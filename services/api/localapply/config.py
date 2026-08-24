@@ -5,18 +5,27 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+#: jobbler/ -- four levels up from services/api/localapply/config.py.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="LA_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_prefix="LA_",
+        # Anchored to the repo root, not the working directory: alembic runs from
+        # services/api, uvicorn from services/api, pytest from the root, and all three must
+        # read the same .env. A bare ".env" silently resolves to a different file per caller.
+        env_file=(REPO_ROOT / ".env", Path(".env")),
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     # --- Storage ---
     database_url: str = "postgresql+asyncpg://localapply:localapply@localhost:5433/localapply"
     redis_url: str = "redis://localhost:6380/0"
-    data_dir: Path = Path("./var")
+    data_dir: Path = REPO_ROOT / "var"
 
     # --- Safety -------------------------------------------------------------------
     #: When true, SUBMIT actions are recorded and simulated but never actually clicked.
