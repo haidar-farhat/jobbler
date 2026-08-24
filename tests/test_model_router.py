@@ -103,3 +103,32 @@ async def test_generate_ensures_the_reasoning_model(router, provider):
     await router.generate("hello")
     assert provider.loaded == [DEFAULT_MODELS[ModelRole.REASON].name]
     assert provider.calls[-1] == ("generate", DEFAULT_MODELS[ModelRole.REASON].name)
+
+
+async def test_nothing_is_reported_resident_before_anything_loads(router):
+    """Found by running the launcher: /health named two pinned models as resident that were
+    not even installed. Operational status has to describe what is really in VRAM."""
+    report = router.vram_report()
+    assert report.resident == []
+    assert report.used_mb == 0
+
+
+async def test_a_pinned_model_appears_only_after_it_is_used(router, provider):
+    await router.ensure_loaded(ModelRole.REASON)
+    assert DEFAULT_MODELS[ModelRole.EMBED].name not in router.vram_report().resident
+
+    await router.ensure_loaded(ModelRole.EMBED)
+    report = router.vram_report()
+    assert DEFAULT_MODELS[ModelRole.EMBED].name in report.resident
+    assert report.used_mb == (
+        DEFAULT_MODELS[ModelRole.REASON].vram_mb + DEFAULT_MODELS[ModelRole.EMBED].vram_mb
+    )
+
+
+async def test_a_swapped_out_model_stops_being_reported(router):
+    await router.ensure_loaded(ModelRole.REASON)
+    await router.ensure_loaded(ModelRole.VISION)
+
+    resident = router.vram_report().resident
+    assert DEFAULT_MODELS[ModelRole.VISION].name in resident
+    assert DEFAULT_MODELS[ModelRole.REASON].name not in resident

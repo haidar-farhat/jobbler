@@ -83,6 +83,9 @@ class ModelRouter:
         #: The one non-pinned model currently loaded.
         self._resident: ModelRole | None = None
         self._pinned: set[ModelRole] = {r for r, s in self._models.items() if s.pinned}
+        #: Roles whose model has actually been loaded. Reporting is driven by this, never
+        #: by the configuration, so status describes what is really in VRAM.
+        self._loaded: set[ModelRole] = set()
         self.stats = SwapStats()
 
     @property
@@ -93,7 +96,13 @@ class ModelRouter:
         return self._models[role]
 
     def _pinned_mb(self) -> int:
-        return sum(self._models[r].vram_mb for r in self._pinned)
+        """VRAM held by pinned models that have *actually* been loaded.
+
+        Counting every configured pinned model would overstate usage before those models
+        are ever used -- and, worse, `/health` reported them as resident, naming models that
+        are not even installed. Operational status has to describe reality.
+        """
+        return sum(self._models[r].vram_mb for r in self._pinned & self._loaded)
 
     async def ensure_loaded(self, role: ModelRole) -> ModelSpec:
         """Make `role` the resident model, unloading the incumbent if it is a different one.
@@ -103,6 +112,10 @@ class ModelRouter:
         spec = self._models[role]
 
         if role in self._pinned:
+            # Pinned models stay resident once loaded, but they are not resident before.
+            if role not in self._loaded:
+                await self._load(spec)
+                self._loaded.add(role)
             return spec
 
         async with self._lock:
@@ -122,7 +135,10 @@ class ModelRouter:
             await self._load(spec)
             elapsed = int((time.perf_counter() - started) * 1000)
 
+            if self._resident is not None:
+                self._loaded.discard(self._resident)
             self._resident = role
+            self._loaded.add(role)
             self.stats.swaps += 1
             self.stats.last_swap_ms = elapsed
             self.stats.total_swap_ms += elapsed
@@ -139,7 +155,9 @@ class ModelRouter:
             await unloader(spec.name)
 
     def vram_report(self) -> VramReport:
-        resident = [self._models[r].name for r in sorted(self._pinned, key=lambda r: r.value)]
+        """What is in VRAM right now -- not what is configured."""
+        loaded_pinned = sorted(self._pinned & self._loaded, key=lambda r: r.value)
+        resident = [self._models[r].name for r in loaded_pinned]
         used = self._pinned_mb()
         if self._resident is not None:
             resident.append(self._models[self._resident].name)
