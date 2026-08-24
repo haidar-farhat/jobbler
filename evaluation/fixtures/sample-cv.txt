@@ -1,0 +1,7 @@
+Placeholder CV file.
+
+Stands in for a real PDF so the UPLOAD action path can be exercised end to end without
+committing a binary to the repo. Playwright's set_input_files does not care about the
+extension.
+
+Replace with your actual CV once document generation lands in Phase 3.
