@@ -69,7 +69,10 @@ def _searchable(texts: list[str]) -> str:
     decides whether a name appears in the source at all.
     """
     joined = " \n ".join(texts)
-    for skill, pattern in _SKILL_PATTERNS:
+    # Loose patterns, deliberately: the strict one used for *detecting* a claim has word
+    # boundaries, so it cannot see "Laravel" inside "usingLaravelandMySQL" either -- which is
+    # exactly the text we are trying to make searchable.
+    for skill, pattern in _LOOSE_PATTERNS:
         joined = pattern.sub(f" {skill} ", joined)
     # Separate any remaining lowercase-to-uppercase run, so "andGemini" is searchable.
     joined = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", joined)
