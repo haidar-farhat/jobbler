@@ -1,0 +1,54 @@
+[project]
+name = "localapply"
+version = "0.1.0"
+description = "Local-first autonomous job-application workstation"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlmodel>=0.0.22",
+    "sqlalchemy>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "playwright>=1.49",
+    "redis>=5.2",
+    "httpx>=0.28",
+    "sse-starlette>=2.1",
+    "python-multipart>=0.0.17",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "aiosqlite>=0.20",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["localapply"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["../../tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_ignores = true
+plugins = ["pydantic.mypy"]

@@ -1,0 +1,46 @@
+# Postgres + Redis only.
+#
+# The application (FastAPI + Playwright) deliberately runs natively on Windows rather
+# than in a container: WSL2 + Docker Desktop + Chromium + a ~5 GB local model does not
+# fit comfortably in 15 GB of RAM. See docs/architecture.md "Deployment shape".
+#
+#   docker compose -f infrastructure/docker/docker-compose.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: localapply-postgres
+    environment:
+      POSTGRES_USER: localapply
+      POSTGRES_PASSWORD: localapply
+      POSTGRES_DB: localapply
+    ports:
+      # 5433 on the host so a pre-existing local Postgres on 5432 does not clash.
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U localapply -d localapply"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Keep Postgres small; RAM is the scarce resource on this machine.
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c max_connections=50
+
+  redis:
+    image: redis:7-alpine
+    container_name: localapply-redis
+    ports:
+      - "6380:6379"
+    command: redis-server --save "" --appendonly no --maxmemory 256mb --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
