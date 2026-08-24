@@ -221,6 +221,9 @@ def start_api(root: Path, python: Path, port: int) -> subprocess.Popen:
     log = open(log_path, "w", encoding="utf-8")  # noqa: SIM115 - lives as long as the process
 
     proc = subprocess.Popen(
+        # Never --reload. On Windows uvicorn's reload mode runs on a SelectorEventLoop,
+        # which cannot spawn subprocesses, so Playwright cannot start its driver and every
+        # run dies with a bare NotImplementedError.
         [str(python), "-m", "uvicorn", "localapply.main:app", "--port", str(port)],
         cwd=str(api),
         stdout=log,
@@ -230,14 +233,13 @@ def start_api(root: Path, python: Path, port: int) -> subprocess.Popen:
 
     for _ in range(60):
         if proc.poll() is not None:
-            die(
-                "The API exited during startup.",
-                f"See {log_path}",
-            )
+            die("The API exited during startup.", f"See {log_path}")
+
         health = http_json(f"http://127.0.0.1:{port}/health")
         if health is not None:
             mode = "DRY RUN" if health["safety"]["dry_run"] else "LIVE - SUBMITS ARE REAL"
             ok(f"API listening on port {port}  [{mode}]")
+            report_subsystems(health)
             if not health["safety"]["dry_run"]:
                 warn("DRY_RUN is off. Approving a submit will send a real application.")
             return proc

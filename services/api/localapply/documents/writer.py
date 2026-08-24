@@ -310,10 +310,17 @@ async def write_tailored_cv(
 
     accepted = {f.id: f for f in facts}
     featured, ranked = writer.plan_content(facts, description)
-    report.featured = [
-        f"{(getattr(r.fact, 'detail', {}) or {}).get('role') or r.fact.key} ({r.why})"
-        for r in featured
-    ]
+    # Name the employer as well as the role: "Senior AI Engineer at Fitly - answers RAG"
+    # tells the user which entry was chosen and why, which "Senior AI Engineer" alone does
+    # not when someone has held the same title twice.
+    def _label(relevance) -> str:
+        detail = getattr(relevance.fact, "detail", None) or {}
+        role = detail.get("role") or relevance.fact.key
+        organisation = detail.get("organisation")
+        where = f" at {organisation}" if organisation else ""
+        return f"{role}{where} - {relevance.why}"
+
+    report.featured = [_label(r) for r in featured]
 
     # --- summary -------------------------------------------------------------------
     summary_item = await writer.write_summary(facts, featured, match, job_title, report)

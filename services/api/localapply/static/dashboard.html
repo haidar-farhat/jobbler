@@ -194,15 +194,19 @@
         <button data-gen="cover_letter">Cover letter</button>
         <button data-gen="master_cv">Master CV</button>
         <label class="muted" style="display:flex;align-items:center;gap:.35rem;
-               font-size:.78rem;cursor:pointer" title="Let the local model rewrite the
-               prose. It may only rephrase lines already grounded in accepted facts; any
-               rewrite that claims something new is rejected and the original kept.">
+               font-size:.78rem;cursor:pointer" title="Runs the full pipeline: pick the experience that answers this job, write a
+               summary, rewrite bullets as achievements, then self-critique and revise.
+               Every line is claim-checked against your accepted facts; anything that
+               claims more is thrown away and the original kept.">
           <input type="checkbox" id="gen-polish" style="width:auto;margin:0">
-          Polish with model
+          Write with model
         </label>
         <span class="muted" id="gen-status" style="font-size:.8rem"></span>
       </div>
       <p id="gen-err" style="color:var(--danger);display:none;font-size:.85rem"></p>
+      <div id="gen-detail" style="display:none;margin-top:.8rem;padding:.8rem;
+           border:1px solid var(--edge);border-radius:6px;font-size:.8rem;
+           line-height:1.55;color:var(--muted)"></div>
       <div id="generated" style="margin-top:1rem"></div>
     </div>
   </section>
@@ -550,6 +554,27 @@ document.querySelectorAll("[data-gen]").forEach(button => {
       // Say when the model was overruled, rather than quietly discarding its output.
       if (body.notes && body.notes.length) {
         $("gen-status").textContent += " — " + body.notes.join("; ");
+      }
+      // Show what the writer chose and where it was overruled, rather than hiding it.
+      const w = body.writer;
+      if (w && (w.featured || w.rejected || w.critique)) {
+        const bits = [];
+        if (w.summary_written) bits.push("<b>Summary written.</b>");
+        if (w.rewritten) bits.push(w.rewritten + " bullet(s) rewritten.");
+        if (w.featured && w.featured.length) {
+          bits.push("<b>Featured:</b><br>" + w.featured.map(esc).join("<br>"));
+        }
+        if (w.rejected && w.rejected.length) {
+          bits.push('<b style="color:var(--warn)">Model overruled:</b><br>'
+                    + w.rejected.map(esc).join("<br>"));
+        }
+        if (w.critique) {
+          bits.push("<b>Its own critique:</b><br>"
+                    + esc(w.critique).replace(/
+/g, "<br>"));
+        }
+        $("gen-detail").innerHTML = bits.join("<br><br>");
+        $("gen-detail").style.display = "block";
       }
       await loadGenerated();
     } catch (e) {
