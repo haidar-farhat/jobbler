@@ -42,8 +42,11 @@ class Settings(BaseSettings):
     max_browser_sessions: int = 3
 
     # --- AI ---
-    #: "stub" = scripted deterministic reasoner (walking skeleton). "ollama" = local models.
-    reasoner: str = "stub"
+    #: "auto" (default) uses the local model when Ollama is running with one installed, and
+    #: falls back to the scripted reasoner when it is not. Set "ollama" or "stub" to force
+    #: one. Defaulting to "stub" meant a machine with a model sitting right there quietly
+    #: ignored it, which is not a sensible default for anyone who bothered to install one.
+    reasoner: str = "auto"
     ollama_base_url: str = "http://localhost:11434"
     #: Measured on the target machine: RTX 5070 Laptop, 8151 MiB. Models load *sequentially*
     #: because a reasoning model (~5 GB) and a vision model (~4 GB) cannot be co-resident.
