@@ -265,14 +265,18 @@ async def test_kill_switch_stops_a_run_in_flight(run_manager, started_run):
             break
         await asyncio.sleep(0.05)
 
-    before = len(await all_actions(started_run.run_id))
     await run_manager.stop_all("test kill switch")
-
     assert KILL_SWITCH.engaged
-    await asyncio.sleep(0.5)
-    after = len(await all_actions(started_run.run_id))
 
-    assert after == before, "no further actions may execute once the kill switch is engaged"
+    # Sample *after* the switch is engaged, not before. An action already in flight when the
+    # button is pressed is allowed to finish -- the guarantee is that no *new* action starts,
+    # and sampling beforehand raced that legitimate in-flight completion.
+    settled = len(await all_actions(started_run.run_id))
+    await asyncio.sleep(0.6)
+
+    assert len(await all_actions(started_run.run_id)) == settled, (
+        "no further actions may start once the kill switch is engaged"
+    )
     assert started_run.status == "stopped"
 
 
