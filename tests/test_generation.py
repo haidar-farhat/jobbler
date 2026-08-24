@@ -274,13 +274,19 @@ def test_rendered_cv_contains_the_facts(facts, generator):
         assert expected in rendered
 
 
-def test_rendered_tailored_cv_names_the_job(facts, generator):
+def test_a_cv_does_not_name_the_company_it_is_sent_to(facts, generator):
+    """A CV is a record of you, not a letter. An earlier template printed an "APPLYING FOR"
+    block naming the employer -- not a CV convention, and a heading no parser has a bucket
+    for. Tailoring shows up as *selection and ordering*, not as a banner."""
     plan = generator.tailored_cv(
         facts, job_title="AI Engineer", company="Northwind", description=JOB_DESCRIPTION
     )
     rendered = render_html(plan)
-    assert "AI Engineer" in rendered
-    assert "Northwind" in rendered
+
+    assert "Northwind" not in rendered
+    assert "APPLYING FOR" not in rendered.upper()
+    # The tailoring is still real: the job's skills lead the list.
+    assert "Python" in rendered
 
 
 def test_rendered_cover_letter_reads_as_a_letter(facts, generator):

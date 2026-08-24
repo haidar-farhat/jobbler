@@ -154,11 +154,39 @@
           everything found comes back as a proposal for you to accept or decline.
         </p>
       </div>
-      <div style="display:flex;gap:.6rem;margin-top:.9rem;align-items:center">
+      <div style="display:flex;gap:.6rem;margin-top:.9rem;align-items:center;flex-wrap:wrap">
         <button class="primary" id="b-upload">Upload &amp; extract</button>
         <span class="muted" id="upload-status" style="font-size:.8rem"></span>
+        <button id="b-reset" style="margin-left:auto;border-color:var(--danger);
+                color:var(--danger)">Start over</button>
       </div>
       <p id="upload-err" style="color:var(--danger);display:none;font-size:.85rem"></p>
+
+      <!-- Deleting a profile is irreversible, so it is a two-step action behind a typed
+           phrase rather than a single click that could be a mis-tap. -->
+      <div id="reset-panel" style="display:none;margin-top:.9rem;padding:.9rem;
+           border:1px solid var(--danger);border-radius:6px">
+        <p style="margin:0 0 .5rem;font-size:.85rem">
+          <b>Delete your profile data and start over?</b><br>
+          <span class="muted">This removes every extracted fact, every generated CV and
+          cover letter, and their PDF files. Your job, application and run history is kept.
+          This cannot be undone.</span>
+        </p>
+        <label class="muted" style="display:flex;align-items:center;gap:.4rem;
+               font-size:.8rem;margin:.5rem 0">
+          <input type="checkbox" id="reset-keep-docs" style="width:auto;margin:0">
+          Keep my uploaded CV file (wipe the facts only, so I can re-import it)
+        </label>
+        <label style="display:block;font-size:.75rem;color:var(--muted)">
+          Type <b>DELETE MY DATA</b> to confirm
+          <input id="reset-confirm" placeholder="DELETE MY DATA" autocomplete="off">
+        </label>
+        <div style="display:flex;gap:.5rem;margin-top:.8rem;align-items:center">
+          <button class="stop" id="b-reset-go">Delete</button>
+          <button id="b-reset-cancel">Cancel</button>
+          <span class="muted" id="reset-status" style="font-size:.8rem"></span>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -488,6 +516,43 @@ $("b-upload").onclick = async () => {
     $("upload-status").textContent = "";
     err.textContent = String(e.message || e);
     err.style.display = "block";
+  }
+};
+
+// --------------------------------------------------------------------------------------
+// Start over: delete profile data
+// --------------------------------------------------------------------------------------
+
+$("b-reset").onclick = () => {
+  $("reset-panel").style.display = "block";
+  $("reset-confirm").value = "";
+  $("reset-status").textContent = "";
+  $("reset-confirm").focus();
+};
+$("b-reset-cancel").onclick = () => { $("reset-panel").style.display = "none"; };
+
+$("b-reset-go").onclick = async () => {
+  const phrase = $("reset-confirm").value.trim();
+  $("reset-status").textContent = "Deleting…";
+  try {
+    const body = await api("/profile/reset", {
+      method: "POST",
+      body: JSON.stringify({
+        confirm: phrase,
+        keep_documents: $("reset-keep-docs").checked
+      })
+    });
+    const d = body.deleted || {};
+    $("reset-status").textContent =
+      "Removed " + (d.facts || 0) + " facts, " + (d.documents || 0) + " documents, "
+      + (d.generated_documents || 0) + " generated. " + (body.note || "");
+    $("reset-panel").style.display = "none";
+    $("upload-status").textContent = body.note || "Profile cleared.";
+    await loadProfile();
+    await loadGenerated();
+  } catch (e) {
+    // The server refuses without the exact phrase; show its message rather than guessing.
+    $("reset-status").textContent = String(e.message || e);
   }
 };
 

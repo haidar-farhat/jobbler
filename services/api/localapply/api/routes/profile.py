@@ -16,9 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from ...ai.reasoner import ReasoningContext
+from ...config import Settings
 from ...db import models as m
 from ...db.models import utc_now
-from ...config import Settings
 from ...db.session import get_session
 from ...profile.facts import USABLE_STATUSES, FactStatus
 from ..deps import get_app_settings

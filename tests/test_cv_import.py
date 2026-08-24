@@ -352,12 +352,14 @@ def test_the_rendered_cv_is_not_a_row_dump(extraction):
 
     html = render_html(DocumentGenerator().master_cv([F(f) for f in extraction.facts]))
 
-    assert 'class="entry-role"' in html
-    assert 'class="entry-dates"' in html
+    # A role renders as a laid-out entry, not one joined string.
+    assert 'class="entry"' in html
+    assert 'class="role"' in html
     assert "Senior AI Engineer" in html
     assert "2023 - Present" in html
-    # No bullet glyphs or joined separators leaking into the rendered body. The CSS above
-    # legitimately defines a middot separator for the contact line, so check the body only.
+    assert "<li>" in html, "bullets should be a real list, not run into the headline"
+
     body = html.split("</style>")[1]
+    # No bullet glyphs or joined separators leaking into the rendered body.
     assert "•" not in body
     assert " · " not in body
