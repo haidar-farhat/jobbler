@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from localapply.contracts import ElementRole
 from localapply.policy.field_classifier import FieldClass, classify
 

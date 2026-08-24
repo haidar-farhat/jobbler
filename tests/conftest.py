@@ -68,9 +68,13 @@ async def database(settings):
     test leak into the next -- which showed up as a profile "already existing" in a test
     that had not created one.
     """
+    from localapply.db.session import (
+        create_all,
+        dispose_engine,
+        get_engine,
+        init_engine,
+    )
     from sqlmodel import SQLModel
-
-    from localapply.db.session import create_all, dispose_engine, get_engine, init_engine
 
     settings.ensure_dirs()
     init_engine(settings)

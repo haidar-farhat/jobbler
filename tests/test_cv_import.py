@@ -11,7 +11,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
 from localapply.documents.cv_parser import CVParser, split_sections
 from localapply.documents.extract import ExtractionError, extract, sha256, sniff
 from localapply.documents.reconcile import Verdict, reconcile, summarise

@@ -21,7 +21,12 @@ from sqlmodel import select  # noqa: E402
 
 from localapply.config import get_settings  # noqa: E402
 from localapply.db import models as m  # noqa: E402
-from localapply.db.session import create_all, dispose_engine, init_engine, session_factory  # noqa: E402
+from localapply.db.session import (  # noqa: E402
+    create_all,
+    dispose_engine,
+    init_engine,
+    session_factory,
+)
 from localapply.profile.facts import FactStatus  # noqa: E402
 
 ACCEPTED = FactStatus.ACCEPTED.value

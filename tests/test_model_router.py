@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from localapply.ai.interface import ModelRole
 from localapply.ai.providers.stub import StubProvider
 from localapply.ai.router import DEFAULT_MODELS, ModelRouter, ModelSpec, VramExceeded

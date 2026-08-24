@@ -11,13 +11,12 @@ import time
 from uuid import UUID
 
 import pytest
-from sqlmodel import select
-
 from localapply.contracts import EventType
 from localapply.db import models as m
 from localapply.db.session import session_factory
 from localapply.orchestrator.state_machine import ApplicationState
 from localapply.safety import KILL_SWITCH
+from sqlmodel import select
 
 pytestmark = pytest.mark.browser
 

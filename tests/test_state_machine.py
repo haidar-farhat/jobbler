@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from localapply.orchestrator.state_machine import (
     TERMINAL_STATES,
     TRANSITIONS,

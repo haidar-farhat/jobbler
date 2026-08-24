@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from localapply.contracts import ActionType, Decision, ElementRole, PageKind
 from localapply.safety import KILL_SWITCH, AutomationHalted
 

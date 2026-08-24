@@ -12,12 +12,11 @@ from uuid import UUID
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlmodel import select
-
 from localapply.api.routes.profile import load_reasoning_context
 from localapply.db import models as m
 from localapply.db.session import session_factory
 from localapply.profile.facts import FactStatus
+from sqlmodel import select
 
 FIXTURE = Path(__file__).resolve().parents[1] / "evaluation" / "fixtures" / "sample-cv.txt"
 
@@ -52,7 +51,7 @@ def cv_bytes() -> bytes:
     return FIXTURE.read_bytes()
 
 
-async def upload(client, data: bytes = None, filename: str = "cv.txt"):
+async def upload(client, data: bytes | None = None, filename: str = "cv.txt"):
     return await client.post(
         "/documents",
         files={"file": (filename, data if data is not None else cv_bytes(), "text/plain")},

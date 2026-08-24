@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from localapply.contracts import ActionType, Decision, ElementRole, PageKind, PolicyOutcome
+from localapply.contracts import (
+    ActionType,
+    Decision,
+    ElementRole,
+    PageKind,
+    PolicyOutcome,
+)
 from localapply.policy.capabilities import capabilities_for
 from localapply.policy.rules import RunContext
 from localapply.safety import KILL_SWITCH
