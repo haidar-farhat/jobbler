@@ -8,7 +8,12 @@ from sqlalchemy import text
 from ...config import Settings
 from ...db.session import get_engine
 from ...safety import KILL_SWITCH
-from ..deps import get_app_settings, get_router, get_run_manager
+from ..deps import (
+    get_app_settings,
+    get_resolved_reasoner,
+    get_router,
+    get_run_manager,
+)
 
 router = APIRouter(tags=["health"])
 
@@ -54,13 +59,18 @@ def _browser_status(runs, settings: Settings) -> dict:
     }
 
 
-async def _ai_status(settings: Settings, model_router) -> dict:
+async def _ai_status(settings: Settings, model_router, resolved: str) -> dict:
     """Report the AI engine honestly, including which model is actually resident.
 
     On an 8 GB card only one large model is loaded at a time, so "which one is in VRAM
     right now" is real operational information rather than a static config echo.
     """
-    status: dict = {"ok": True, "reasoner": settings.reasoner}
+    status: dict = {
+        "ok": True,
+        "reasoner": resolved,
+        # Both, so "auto" is visible as a choice rather than looking like a hardcoded value.
+        "configured": settings.reasoner,
+    }
     if model_router is None:
         return status
 
@@ -74,7 +84,7 @@ async def _ai_status(settings: Settings, model_router) -> dict:
         "mean_swap_ms": model_router.stats.mean_swap_ms,
     }
 
-    if settings.reasoner == "ollama":
+    if resolved == "ollama":
         try:
             reachable = await model_router.provider.health()
         except Exception:  # noqa: BLE001
@@ -93,6 +103,7 @@ async def health(
     settings: Settings = Depends(get_app_settings),
     runs=Depends(get_run_manager),
     model_router=Depends(get_router),
+    resolved: str = Depends(get_resolved_reasoner),
 ) -> dict:
     db_ok, db_error = await _database_ok()
     redis_ok, redis_error = await _redis_ok(settings)
@@ -106,7 +117,7 @@ async def health(
             "database": {"ok": db_ok, "error": db_error},
             "redis": {"ok": redis_ok, "error": redis_error},
             "browser": _browser_status(runs, settings),
-            "ai": await _ai_status(settings, model_router),
+            "ai": await _ai_status(settings, model_router, resolved),
         },
         "safety": {
             "kill_switch": KILL_SWITCH.status(),

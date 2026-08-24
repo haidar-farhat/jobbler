@@ -9,6 +9,8 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
@@ -36,19 +38,40 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 WEB_DIST = REPO_ROOT / "apps" / "web" / "dist"
 
 
-def build_model_router(settings) -> ModelRouter:
+async def resolve_reasoner(settings) -> str:
+    """Turn `LA_REASONER=auto` into a concrete choice by looking for a usable model.
+
+    Explicit settings are honoured exactly, including "ollama" when Ollama is down -- if you
+    asked for the model, a silent downgrade to the scripted reasoner would be worse than a
+    red light on the dashboard telling you it is missing.
+    """
+    configured = (settings.reasoner or "auto").strip().lower()
+    if configured != "auto":
+        return configured
+
+    try:
+        provider = OllamaProvider(settings.ollama_base_url)
+        if not await provider.health():
+            return "stub"
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            response = await client.get(f"{settings.ollama_base_url}/api/tags")
+            models = response.json().get("models", [])
+        return "ollama" if models else "stub"
+    except Exception:  # noqa: BLE001 - detection must never stop the app starting
+        return "stub"
+
+
+def build_model_router(settings, resolved: str) -> ModelRouter:
     """One router per process. Its exclusive lock is what keeps two coroutines from racing
     a model swap on a single 8 GB card, so there must not be a second instance."""
     provider = (
-        OllamaProvider(settings.ollama_base_url)
-        if settings.reasoner == "ollama"
-        else StubProvider()
+        OllamaProvider(settings.ollama_base_url) if resolved == "ollama" else StubProvider()
     )
     return ModelRouter(provider, vram_budget_mb=settings.vram_budget_mb)
 
 
-def build_run_manager(settings, router: ModelRouter) -> RunManager:
-    reasoner = LLMReasoner(router) if settings.reasoner == "ollama" else StubReasoner()
+def build_run_manager(settings, router: ModelRouter, resolved: str) -> RunManager:
+    reasoner = LLMReasoner(router) if resolved == "ollama" else StubReasoner()
 
     return RunManager(
         settings=settings,
@@ -69,8 +92,12 @@ async def lifespan(app: FastAPI):
 
     app.state.settings = settings
     app.state.bus = EVENT_BUS
-    app.state.router = build_model_router(settings)
-    app.state.runs = build_run_manager(settings, app.state.router)
+    # Resolved once at startup: probing on every request would add latency to /health and
+    # could flip the reasoner mid-run.
+    resolved = await resolve_reasoner(settings)
+    app.state.reasoner = resolved
+    app.state.router = build_model_router(settings, resolved)
+    app.state.runs = build_run_manager(settings, app.state.router, resolved)
 
     yield
 

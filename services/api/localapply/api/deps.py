@@ -21,6 +21,11 @@ def get_app_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
+def get_resolved_reasoner(request: Request) -> str:
+    """Which reasoner is actually in use, after "auto" was resolved at startup."""
+    return getattr(request.app.state, "reasoner", "stub")
+
+
 def get_router(request: Request):
     """The process-wide ModelRouter, or None when no AI engine is configured."""
     return getattr(request.app.state, "router", None)
