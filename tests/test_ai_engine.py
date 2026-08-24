@@ -487,3 +487,77 @@ def test_repeated_clicks_are_not_blocked(engine, make_element, make_observation,
     application_context.executed_signatures.add(action_signature(click, observation))
 
     assert engine.evaluate(click, observation, application_context).outcome is PolicyOutcome.ALLOW
+
+
+# --------------------------------------------------------------------------------------
+# Reasoner auto-detection
+#
+# The default was "stub", so a machine with a 4.7 GB model installed and Ollama running
+# quietly ignored it and used the scripted reasoner. Nobody who installs a model wants that.
+# --------------------------------------------------------------------------------------
+
+
+class _Response:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+async def _resolve(monkeypatch, settings, *, healthy: bool, models: list[str]):
+    import httpx
+    from localapply import main as main_module
+
+    class FakeProvider:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        async def health(self):
+            return healthy
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, _url):
+            return _Response({"models": [{"name": m} for m in models]})
+
+    monkeypatch.setattr(main_module, "OllamaProvider", FakeProvider)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    return await main_module.resolve_reasoner(settings)
+
+
+async def test_auto_uses_the_model_when_one_is_installed(monkeypatch, settings):
+    settings = settings.model_copy(update={"reasoner": "auto"})
+    resolved = await _resolve(monkeypatch, settings, healthy=True, models=["qwen2.5:7b"])
+    assert resolved == "ollama"
+
+
+async def test_auto_falls_back_when_ollama_is_down(monkeypatch, settings):
+    settings = settings.model_copy(update={"reasoner": "auto"})
+    resolved = await _resolve(monkeypatch, settings, healthy=False, models=[])
+    assert resolved == "stub"
+
+
+async def test_auto_falls_back_when_ollama_has_no_models(monkeypatch, settings):
+    """Running but empty is not usable, and pretending otherwise fails on the first run."""
+    settings = settings.model_copy(update={"reasoner": "auto"})
+    resolved = await _resolve(monkeypatch, settings, healthy=True, models=[])
+    assert resolved == "stub"
+
+
+async def test_an_explicit_choice_is_never_overridden(monkeypatch, settings):
+    """Asking for the model and silently getting the scripted reasoner would hide a real
+    problem; the dashboard should show a red light instead."""
+    forced = settings.model_copy(update={"reasoner": "ollama"})
+    assert await _resolve(monkeypatch, forced, healthy=False, models=[]) == "ollama"
+
+    forced_stub = settings.model_copy(update={"reasoner": "stub"})
+    assert await _resolve(monkeypatch, forced_stub, healthy=True, models=["x"]) == "stub"
