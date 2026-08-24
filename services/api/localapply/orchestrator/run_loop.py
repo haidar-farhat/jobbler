@@ -203,10 +203,8 @@ class RunManager:
         KILL_SWITCH.engage(reason)
         for run_id in list(self._runs):
             await self._bus.emit(run_id, EventType.KILL_SWITCH, reason)
-            try:
+            with contextlib.suppress(KeyError):
                 await self.stop(run_id, reason)
-            except KeyError:
-                pass
         await self._browser.stop()
 
     async def resolve_approval(

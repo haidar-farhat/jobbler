@@ -200,9 +200,13 @@ class StubReasoner(Reasoner):
         observation: Observation, pattern: re.Pattern[str], roles: set[ElementRole]
     ) -> ObservedElement | None:
         for element in observation.elements:
-            if element.role in roles and element.visible and element.enabled:
-                if pattern.search(element.name):
-                    return element
+            if (
+                element.role in roles
+                and element.visible
+                and element.enabled
+                and pattern.search(element.name)
+            ):
+                return element
         return None
 
 

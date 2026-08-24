@@ -12,6 +12,7 @@ up rather than starting blind. Durable persistence is the run loop's job (`agent
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -43,10 +44,10 @@ class EventBus:
             subscribers = list(self._subscribers.get(event.run_id, ()))
 
         for queue in subscribers:
-            try:
+            # Slow consumer: drop rather than stall the agent. The durable log in Postgres
+            # stays complete either way, and the client can refetch history by seq.
+            with contextlib.suppress(asyncio.QueueFull):
                 queue.put_nowait(event)
-            except asyncio.QueueFull:
-                pass  # Slow consumer; the durable log still has it.
         return event
 
     async def emit(

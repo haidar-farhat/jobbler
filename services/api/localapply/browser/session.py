@@ -9,6 +9,7 @@ rather than resolving to whatever element now occupies that position.
 
 from __future__ import annotations
 
+import contextlib
 from uuid import UUID, uuid4
 
 from playwright.async_api import Browser, BrowserContext, Locator, Page, async_playwright
@@ -121,7 +122,6 @@ class BrowserManager:
         context = self._contexts.pop(session_id, None)
         if context is None:
             return
-        try:
+        # The browser may already be gone; closing twice is not an error.
+        with contextlib.suppress(Exception):
             await context.close()
-        except Exception:  # noqa: BLE001 - the browser may already be gone
-            pass

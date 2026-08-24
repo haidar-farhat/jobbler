@@ -43,6 +43,15 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    # `Depends()` / `Query()` in argument defaults IS the FastAPI idiom -- the whole
+    # dependency-injection system is built on it. B008 is a real rule for ordinary code and
+    # simply does not apply to route handlers.
+    "B008",
+    # `class Foo(str, Enum)` is deliberate: it keeps the Pydantic v2 serialisation behaviour
+    # explicit and matches how the contracts are consumed on the TypeScript side.
+    "UP042",
+]
 
 [tool.mypy]
 python_version = "3.12"

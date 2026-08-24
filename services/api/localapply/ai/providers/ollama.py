@@ -8,6 +8,7 @@ the router's exclusive-load discipline real rather than aspirational.
 from __future__ import annotations
 
 import base64
+import json
 from collections.abc import AsyncIterator
 
 import httpx
@@ -55,16 +56,16 @@ class OllamaProvider:
         payload = {"model": kw.get("model"), "prompt": prompt, "stream": True}
         if system:
             payload["system"] = system
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            async with client.stream("POST", f"{self._base_url}/api/generate", json=payload) as r:
-                async for line in r.aiter_lines():
-                    if not line.strip():
-                        continue
-                    import json
-
-                    chunk = json.loads(line)
-                    if chunk.get("response"):
-                        yield chunk["response"]
+        async with (
+            httpx.AsyncClient(timeout=self._timeout) as client,
+            client.stream("POST", f"{self._base_url}/api/generate", json=payload) as response,
+        ):
+            async for line in response.aiter_lines():
+                if not line.strip():
+                    continue
+                chunk = json.loads(line)
+                if chunk.get("response"):
+                    yield chunk["response"]
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         data = await self._post(

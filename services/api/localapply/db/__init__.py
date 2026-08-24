@@ -11,7 +11,14 @@ from .models import (
     ProfileFact,
     Screenshot,
 )
-from .session import create_all, dispose_engine, get_engine, get_session, init_engine, session_factory
+from .session import (
+    create_all,
+    dispose_engine,
+    get_engine,
+    get_session,
+    init_engine,
+    session_factory,
+)
 
 __all__ = [
     "AgentEventRow",
