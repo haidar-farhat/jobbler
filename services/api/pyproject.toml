@@ -20,6 +20,9 @@ dependencies = [
     # CV import (Phase 2). Both are pure-Python with cp314 wheels.
     "pypdf>=5.1",
     "python-docx>=1.1",
+    # Document generation (Phase 3). PDFs are printed by the Chromium that
+    # Playwright already installs, so no separate PDF stack is needed.
+    "jinja2>=3.1",
 ]
 
 [project.optional-dependencies]

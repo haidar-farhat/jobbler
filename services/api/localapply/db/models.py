@@ -99,6 +99,35 @@ class ProfileFact(SQLModel, table=True):
     )
 
 
+class GeneratedDocument(SQLModel, table=True):
+    """A CV or cover letter produced for a specific job, at a specific moment.
+
+    Never overwritten: every generation is a new version, so what you actually sent can
+    always be recovered. `fact_ids` records exactly which accepted facts backed it, which is
+    what makes a document auditable months later -- including after those facts have changed.
+    """
+
+    __tablename__ = "generated_documents"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    profile_id: UUID = Field(foreign_key="profiles.id", index=True)
+    job_id: UUID | None = Field(default=None, foreign_key="jobs.id", index=True)
+    kind: str = Field(index=True)  # master_cv | tailored_cv | cover_letter
+    version: int = 1
+    title: str = ""
+    job_title: str | None = None
+    company: str | None = None
+    #: The rendered HTML, kept so a document can be re-read without re-generating it.
+    html: str = ""
+    pdf_path: str | None = None
+    #: Provenance: the accepted facts this document was built from.
+    fact_ids: list = Field(default_factory=list, sa_column=Column(sa.JSON))
+    match_score: float | None = None
+    match_breakdown: dict = Field(default_factory=dict, sa_column=Column(sa.JSON))
+    generator: str = "rules"
+    created_at: datetime = Field(default_factory=utc_now, sa_column=_ts_column())
+
+
 # --------------------------------------------------------------------------------------
 # Jobs and applications
 # --------------------------------------------------------------------------------------
