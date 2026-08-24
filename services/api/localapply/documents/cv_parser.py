@@ -1,0 +1,394 @@
+"""CV text -> proposed facts.
+
+Rule-based and deterministic, for the same reasons `StubReasoner` is: every test has a fixed
+expected outcome, extraction can be reasoned about, and a bad CV cannot talk the parser into
+inventing a qualification. `LLMCVParser` implements the same interface for later, and its
+output lands in exactly the same review queue -- a model may propose, never accept.
+
+Every fact carries a confidence and the source line it came from, so a proposal can be
+checked against the document instead of taken on trust.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+from ..profile.facts import FactCategory
+
+# --------------------------------------------------------------------------------------
+# Patterns
+# --------------------------------------------------------------------------------------
+
+EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]{2,}\b")
+# Deliberately conservative: at least 8 digits, so dates and postcodes do not match.
+PHONE_RE = re.compile(r"(?<!\w)(\+?\d[\d\s().-]{7,20}\d)(?!\w)")
+LINKEDIN_RE = re.compile(r"(?:https?://)?(?:[\w-]+\.)?linkedin\.com/in/[\w%-]+/?", re.I)
+GITHUB_RE = re.compile(r"(?:https?://)?(?:www\.)?github\.com/[\w-]+/?", re.I)
+URL_RE = re.compile(r"https?://[^\s<>()\[\]]+", re.I)
+
+#: Section headings, matched on a line of their own.
+SECTION_RE = re.compile(
+    r"^\s*(summary|profile|objective|about(?:\s+me)?|skills?|technical\s+skills?|"
+    r"technologies|experience|work\s+experience|employment(?:\s+history)?|"
+    r"professional\s+experience|education|qualifications|projects?|"
+    r"certifications?|certificates|awards|languages|interests|references)\s*:?\s*$",
+    re.IGNORECASE,
+)
+
+SECTION_ALIASES = {
+    "summary": "summary", "profile": "summary", "objective": "summary",
+    "about": "summary", "about me": "summary",
+    "skill": "skills", "skills": "skills", "technical skill": "skills",
+    "technical skills": "skills", "technologies": "skills",
+    "experience": "experience", "work experience": "experience",
+    "employment": "experience", "employment history": "experience",
+    "professional experience": "experience",
+    "education": "education", "qualifications": "education",
+    "project": "projects", "projects": "projects",
+    "certification": "certifications", "certifications": "certifications",
+    "certificates": "certifications",
+    "awards": "awards", "languages": "languages",
+    "interests": "interests", "references": "references",
+}
+
+#: A curated vocabulary, so skills are recognised even without a SKILLS heading. Matching a
+#: known list beats guessing at arbitrary capitalised words, which produces noise.
+KNOWN_SKILLS: tuple[str, ...] = (
+    "Python", "JavaScript", "TypeScript", "Java", "C#", "C++", "Go", "Rust", "PHP", "Ruby",
+    "Kotlin", "Swift", "Scala", "R", "MATLAB", "Bash", "PowerShell", "SQL", "NoSQL",
+    "React", "React Native", "Next.js", "Vue", "Angular", "Svelte", "Node.js", "Express",
+    "Django", "Flask", "FastAPI", "Laravel", "Spring", "Rails", ".NET", "Tailwind",
+    "PostgreSQL", "MySQL", "SQLite", "MongoDB", "Redis", "Elasticsearch", "Cassandra",
+    "Docker", "Kubernetes", "Terraform", "Ansible", "Jenkins", "GitHub Actions", "GitLab CI",
+    "AWS", "Azure", "GCP", "Linux", "Nginx", "Kafka", "RabbitMQ", "GraphQL", "REST",
+    "PyTorch", "TensorFlow", "scikit-learn", "Pandas", "NumPy", "Hugging Face",
+    "LangChain", "LlamaIndex", "RAG", "LLM", "NLP", "OCR", "Computer Vision",
+    "Machine Learning", "Deep Learning", "Playwright", "Selenium", "Cypress",
+    "Git", "Jira", "Figma", "Agile", "Scrum", "CI/CD", "Microservices", "Redux",
+)
+
+_SKILL_PATTERNS = [
+    (skill, re.compile(r"(?<![\w+#.])" + re.escape(skill) + r"(?![\w+#.])", re.IGNORECASE))
+    for skill in KNOWN_SKILLS
+]
+
+#: Split a skills line into individual skills.
+SKILL_SPLIT_RE = re.compile(r"[,;|/•·●▪*\t]+|\s{3,}|\s+[-–—]\s+")
+
+NAME_STOPWORDS = {
+    "curriculum", "vitae", "resume", "cv", "profile", "contact", "summary", "objective",
+    "personal", "details", "address", "phone", "email", "portfolio",
+}
+
+DATE_RANGE_RE = re.compile(
+    r"((?:19|20)\d{2}|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*"
+    r"(?:19|20)\d{2})\s*[-–—to]+\s*((?:19|20)\d{2}|present|current|now|"
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*(?:19|20)\d{2})",
+    re.IGNORECASE,
+)
+
+TITLE_HINT_RE = re.compile(
+    r"\b(engineer|developer|designer|manager|analyst|consultant|architect|scientist|"
+    r"intern|lead|director|specialist|administrator|researcher|founder|freelance)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class ExtractedFact:
+    key: str
+    value: str
+    category: str
+    confidence: float = 0.8
+    evidence: str = ""
+
+
+@dataclass
+class CVExtraction:
+    facts: list[ExtractedFact] = field(default_factory=list)
+    sections: dict[str, list[str]] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+
+    def by_category(self, category: str) -> list[ExtractedFact]:
+        return [f for f in self.facts if f.category == category]
+
+
+# --------------------------------------------------------------------------------------
+
+
+def split_sections(text: str) -> dict[str, list[str]]:
+    """Group lines under their heading. Anything before the first heading is 'header',
+    which is where contact details almost always live."""
+    sections: dict[str, list[str]] = {"header": []}
+    current = "header"
+
+    for raw in text.split("\n"):
+        line = raw.strip()
+        match = SECTION_RE.match(line)
+        if match:
+            key = re.sub(r"\s+", " ", match.group(1).strip().lower())
+            current = SECTION_ALIASES.get(key, key)
+            sections.setdefault(current, [])
+            continue
+        if line:
+            sections.setdefault(current, []).append(line)
+
+    return sections
+
+
+def _looks_like_name(line: str) -> bool:
+    if not (3 <= len(line) <= 60) or any(ch.isdigit() for ch in line):
+        return False
+    if "@" in line or "http" in line.lower() or "," in line:
+        return False
+    words = line.split()
+    if not (2 <= len(words) <= 4):
+        return False
+    if any(w.lower().strip(".:") in NAME_STOPWORDS for w in words):
+        return False
+    # Accept "Haidar Farhat" and "HAIDAR FARHAT"; reject "senior software engineer".
+    return all(w[:1].isupper() for w in words if w[:1].isalpha())
+
+
+def find_name(sections: dict[str, list[str]], text: str) -> str | None:
+    for line in sections.get("header", [])[:8]:
+        if _looks_like_name(line):
+            return " ".join(w.capitalize() if w.isupper() else w for w in line.split())
+    # Fall back to the line immediately above the email address.
+    match = EMAIL_RE.search(text)
+    if match:
+        preceding = text[: match.start()].split("\n")
+        for line in reversed([ln.strip() for ln in preceding][-4:]):
+            if _looks_like_name(line):
+                return line
+    return None
+
+
+def _line_for(text: str, needle: str) -> str:
+    for line in text.split("\n"):
+        if needle in line:
+            return line.strip()[:200]
+    return ""
+
+
+def _extract_contact(text: str, sections: dict[str, list[str]]) -> list[ExtractedFact]:
+    facts: list[ExtractedFact] = []
+
+    name = find_name(sections, text)
+    if name:
+        facts.append(ExtractedFact("full_name", name, FactCategory.IDENTITY.value, 0.85, name))
+        parts = name.split()
+        facts.append(
+            ExtractedFact("first_name", parts[0], FactCategory.IDENTITY.value, 0.8, name)
+        )
+        if len(parts) > 1:
+            facts.append(
+                ExtractedFact("last_name", parts[-1], FactCategory.IDENTITY.value, 0.8, name)
+            )
+
+    email = EMAIL_RE.search(text)
+    if email:
+        facts.append(
+            ExtractedFact(
+                "email", email.group(0), FactCategory.IDENTITY.value, 0.97,
+                _line_for(text, email.group(0)),
+            )
+        )
+
+    # Search only the header for a phone: body text is full of digit runs.
+    header = "\n".join(sections.get("header", []))
+    phone = PHONE_RE.search(header)
+    if phone:
+        value = re.sub(r"\s{2,}", " ", phone.group(1)).strip()
+        if sum(ch.isdigit() for ch in value) >= 8:
+            facts.append(
+                ExtractedFact("phone", value, FactCategory.IDENTITY.value, 0.85,
+                              _line_for(text, phone.group(1)))
+            )
+
+    linkedin = LINKEDIN_RE.search(text)
+    if linkedin:
+        facts.append(
+            ExtractedFact("linkedin_url", _as_url(linkedin.group(0)),
+                          FactCategory.IDENTITY.value, 0.95, linkedin.group(0))
+        )
+
+    github = GITHUB_RE.search(text)
+    if github:
+        facts.append(
+            ExtractedFact("github_url", _as_url(github.group(0)),
+                          FactCategory.IDENTITY.value, 0.95, github.group(0))
+        )
+
+    for url in URL_RE.findall(text):
+        if "linkedin.com" in url.lower() or "github.com" in url.lower():
+            continue
+        facts.append(
+            ExtractedFact("portfolio_url", url.rstrip(".,);"),
+                          FactCategory.IDENTITY.value, 0.6, url)
+        )
+        break
+
+    return facts
+
+
+def _as_url(value: str) -> str:
+    value = value.rstrip("/")
+    return value if value.lower().startswith("http") else f"https://{value}"
+
+
+def _extract_skills(text: str, sections: dict[str, list[str]]) -> list[ExtractedFact]:
+    facts: list[ExtractedFact] = []
+    seen: set[str] = set()
+
+    # Explicit SKILLS section: high confidence, because the author labelled it.
+    for line in sections.get("skills", []):
+        body = line.split(":", 1)[1] if ":" in line[:30] else line
+        for token in SKILL_SPLIT_RE.split(body):
+            skill = token.strip(" .-–—•·")
+            if not (2 <= len(skill) <= 40) or skill.lower() in seen:
+                continue
+            if not any(ch.isalpha() for ch in skill):
+                continue
+            seen.add(skill.lower())
+            facts.append(
+                ExtractedFact(skill, skill, FactCategory.SKILL.value, 0.85, line[:200])
+            )
+
+    # Known technologies anywhere in the document, at lower confidence.
+    for skill, pattern in _SKILL_PATTERNS:
+        if skill.lower() in seen:
+            continue
+        match = pattern.search(text)
+        if match:
+            seen.add(skill.lower())
+            facts.append(
+                ExtractedFact(skill, skill, FactCategory.SKILL.value, 0.7,
+                              _line_for(text, match.group(0)))
+            )
+
+    return facts
+
+
+def _entries(lines: list[str]) -> list[list[str]]:
+    """Group a section's lines into entries, starting a new one at each dated line.
+
+    CV layouts vary wildly; a date range is the most reliable entry delimiter there is.
+    """
+    entries: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if DATE_RANGE_RE.search(line) and current:
+            entries.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        entries.append(current)
+    return [e for e in entries if e]
+
+
+def _extract_experience(sections: dict[str, list[str]]) -> list[ExtractedFact]:
+    facts: list[ExtractedFact] = []
+    for entry in _entries(sections.get("experience", []))[:12]:
+        headline = entry[0][:200]
+        dates = DATE_RANGE_RE.search(" ".join(entry[:3]))
+        summary = " · ".join(entry[:2])[:300]
+        facts.append(
+            ExtractedFact(
+                key=headline[:80],
+                value=summary,
+                category=FactCategory.EXPERIENCE.value,
+                confidence=0.75 if dates else 0.55,
+                evidence=headline,
+            )
+        )
+    return facts
+
+
+def _extract_education(sections: dict[str, list[str]]) -> list[ExtractedFact]:
+    return [
+        ExtractedFact(entry[0][:80], " · ".join(entry[:2])[:300],
+                      FactCategory.EDUCATION.value, 0.7, entry[0][:200])
+        for entry in _entries(sections.get("education", []))[:8]
+    ]
+
+
+def _extract_simple(sections: dict[str, list[str]], name: str, category: str,
+                    confidence: float) -> list[ExtractedFact]:
+    return [
+        ExtractedFact(line[:80], line[:300], category, confidence, line[:200])
+        for line in sections.get(name, [])[:12]
+        if len(line) > 3
+    ]
+
+
+def _extract_title(sections: dict[str, list[str]]) -> list[ExtractedFact]:
+    for line in sections.get("header", [])[:6]:
+        if TITLE_HINT_RE.search(line) and len(line) <= 80 and "@" not in line:
+            return [
+                ExtractedFact("current_title", line.strip(" .-–—"),
+                              FactCategory.IDENTITY.value, 0.7, line)
+            ]
+    for entry in _entries(sections.get("experience", []))[:1]:
+        for line in entry[:2]:
+            if TITLE_HINT_RE.search(line) and len(line) <= 80:
+                cleaned = DATE_RANGE_RE.sub("", line).strip(" ,·|-–—")
+                if cleaned:
+                    return [
+                        ExtractedFact("current_title", cleaned[:80],
+                                      FactCategory.IDENTITY.value, 0.6, line)
+                    ]
+    return []
+
+
+class CVParser:
+    """Rule-based extraction. No model, no network, no randomness."""
+
+    name = "rules"
+
+    def parse(self, text: str) -> CVExtraction:
+        sections = split_sections(text)
+        result = CVExtraction(sections=sections)
+
+        result.facts.extend(_extract_contact(text, sections))
+        result.facts.extend(_extract_title(sections))
+        result.facts.extend(_extract_skills(text, sections))
+        result.facts.extend(_extract_experience(sections))
+        result.facts.extend(_extract_education(sections))
+        result.facts.extend(
+            _extract_simple(sections, "projects", FactCategory.PROJECT.value, 0.65)
+        )
+        result.facts.extend(
+            _extract_simple(sections, "certifications",
+                            FactCategory.CERTIFICATION.value, 0.75)
+        )
+
+        # Say what was not found, rather than leaving a silent gap in the profile.
+        found = {f.key for f in result.facts}
+        for key, label in (("email", "an email address"), ("full_name", "a name")):
+            if key not in found:
+                result.warnings.append(f"Could not find {label} in this document.")
+        if not sections.get("experience"):
+            result.warnings.append(
+                "No experience section was recognised. If your CV uses an unusual heading, "
+                "the entries will need adding by hand."
+            )
+        return result
+
+
+class LLMCVParser(CVParser):
+    """Phase 4. Same interface, a model behind it.
+
+    Its output goes into the identical review queue: a model may propose facts, never accept
+    them, so an extraction error stays a suggestion you decline rather than a lie in your CV.
+    """
+
+    name = "llm"
+
+    def __init__(self, router) -> None:
+        self._router = router
+
+    def parse(self, text: str) -> CVExtraction:  # pragma: no cover - not wired yet
+        raise NotImplementedError("Model-backed CV parsing lands with the AI engine.")

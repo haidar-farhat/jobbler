@@ -40,12 +40,39 @@ class Profile(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, sa_column=_ts_column())
 
 
-class ProfileFact(SQLModel, table=True):
-    """One atomic, individually-verifiable fact.
+class Document(SQLModel, table=True):
+    """An uploaded CV or supporting document.
 
-    The profile is a set of facts with provenance rather than a blob of text, so a CV import
-    can propose additions the user approves one at a time instead of silently rewriting an
-    identity. `verified` gates use: unverified facts are never entered into an application.
+    Extracted text is stored alongside the original so a re-parse never needs another
+    upload, and so any proposed fact can be audited against its source.
+    """
+
+    __tablename__ = "documents"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    profile_id: UUID = Field(foreign_key="profiles.id", index=True)
+    filename: str
+    content_type: str = ""
+    size_bytes: int = 0
+    #: Content hash, so re-uploading the same file is recognised rather than duplicated.
+    sha256: str = Field(index=True)
+    stored_path: str = ""
+    parser: str = ""  # pdf | docx | text
+    text: str = ""
+    text_chars: int = 0
+    page_count: int | None = None
+    error: str | None = None
+    uploaded_at: datetime = Field(default_factory=utc_now, sa_column=_ts_column())
+
+
+class ProfileFact(SQLModel, table=True):
+    """One atomic, individually-provenanced fact.
+
+    The profile is a set of facts rather than a blob of text, so a CV import can *propose*
+    additions you approve one at a time instead of silently rewriting your identity.
+
+    `status` is the only gate on use -- see profile.facts.is_usable(). There is deliberately
+    no second boolean beside it that could fall out of step.
     """
 
     __tablename__ = "profile_facts"
@@ -55,11 +82,21 @@ class ProfileFact(SQLModel, table=True):
     #: Matches field_classifier.SAFE_PATTERNS profile keys, e.g. "first_name".
     key: str = Field(index=True)
     value: str
-    category: str = "identity"  # identity | skill | experience | education | project | answer
-    source: str = "manual"  # manual | cv_import | inferred
+    category: str = "identity"  # see profile.facts.FactCategory
+    source: str = "manual"  # see profile.facts.FactSource
     confidence: float = 1.0
-    verified: bool = False
+    #: accepted | proposed | rejected | superseded. Only "accepted" is usable.
+    status: str = Field(default="proposed", index=True)
+    #: Provenance: which upload produced this fact, when it came from one.
+    document_id: UUID | None = Field(default=None, foreign_key="documents.id", index=True)
+    #: Set on a proposal that would replace an existing accepted fact with the same key.
+    supersedes_id: UUID | None = Field(default=None, foreign_key="profile_facts.id")
+    #: The line it was found on, so a proposal can be checked against the source text.
+    evidence: str | None = None
     created_at: datetime = Field(default_factory=utc_now, sa_column=_ts_column())
+    resolved_at: datetime | None = Field(
+        default=None, sa_column=Column(sa.DateTime(timezone=True), nullable=True)
+    )
 
 
 # --------------------------------------------------------------------------------------
