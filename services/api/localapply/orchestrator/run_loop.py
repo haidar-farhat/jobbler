@@ -118,6 +118,14 @@ class RunManager:
     def runs(self) -> dict[UUID, RunHandle]:
         return self._runs
 
+    @property
+    def browser(self) -> BrowserManager:
+        return self._browser
+
+    @property
+    def settings(self) -> Settings:
+        return self._settings
+
     def get(self, run_id: UUID) -> RunHandle | None:
         return self._runs.get(run_id)
 

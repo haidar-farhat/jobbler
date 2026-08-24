@@ -1,0 +1,9 @@
+# The first migration is generated against a running Postgres rather than hand-written:
+#
+#   docker compose -f ../../infrastructure/docker/docker-compose.yml up -d
+#   alembic revision --autogenerate -m "initial schema"
+#   alembic upgrade head
+#
+# Autogenerating against the real database is deliberate: hand-written DDL that has never
+# been executed is a liability, and SQLModel's column types (JSON, timezone-aware timestamps)
+# differ enough between dialects to be worth letting Alembic resolve.
