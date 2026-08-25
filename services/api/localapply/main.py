@@ -22,6 +22,7 @@ from .ai.router import ModelRouter
 from .api.routes import (
     agent,
     approvals,
+    backup,
     documents,
     events,
     generate,
@@ -222,6 +223,7 @@ def create_app() -> FastAPI:
     app.include_router(agent.router)
     app.include_router(jobs.router)
     app.include_router(searches.router)
+    app.include_router(backup.router)
     app.include_router(approvals.router)
     app.include_router(events.router)
 

@@ -169,6 +169,25 @@
       </div>
       <p id="upload-err" style="color:var(--danger);display:none;font-size:.85rem"></p>
 
+      <!-- Next to the destructive button on purpose. "Back up first" is only useful advice
+           if backing up is one click away at the moment you are about to need it. -->
+      <div style="margin-top:.9rem;padding:.8rem;border:1px solid var(--edge);
+           border-radius:6px">
+        <p style="margin:0 0 .5rem;font-size:.85rem"><b>Back up everything</b><br>
+          <span class="muted">Your facts, your documents and their PDFs, your job history
+          and its audit trail — one zip of plain JSON you could open in ten years without
+          this app. <span id="backup-size"></span></span>
+        </p>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <button id="b-export">Download a backup</button>
+          <label style="font-size:.78rem;color:var(--muted);cursor:pointer">
+            <input type="file" id="import-file" accept=".zip" style="display:none">
+            <span id="b-import-label" style="text-decoration:underline">Restore one…</span>
+          </label>
+          <span class="muted" id="backup-status" style="font-size:.8rem"></span>
+        </div>
+      </div>
+
       <!-- Deleting a profile is irreversible, so it is a two-step action behind a typed
            phrase rather than a single click that could be a mis-tap. -->
       <div id="reset-panel" style="display:none;margin-top:.9rem;padding:.9rem;
@@ -344,6 +363,21 @@ let runId = null, source = null, seen = new Set(), lastShot = null;
 // phone is paired once rather than on every visit.
 let apiToken = "";
 try { apiToken = localStorage.getItem("localapply-token") || ""; } catch (e) { apiToken = ""; }
+
+// Arriving with ?token=... is how a phone is paired: one URL to type instead of a
+// 43-character secret on a mobile keyboard. It is stored and then removed from the address
+// bar immediately, so it lives in the URL for exactly one page load and does not end up in
+// history, a bookmark, or a screenshot of the browser chrome.
+(function pairFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const supplied = params.get("token");
+  if (!supplied) return;
+  apiToken = supplied.trim();
+  try { localStorage.setItem("localapply-token", apiToken); } catch (e) { /* private mode */ }
+  params.delete("token");
+  const rest = params.toString();
+  window.history.replaceState({}, "", window.location.pathname + (rest ? "?" + rest : ""));
+})();
 
 async function api(path, opts) {
   const headers = {"Content-Type": "application/json"};
@@ -966,7 +1000,7 @@ const VIEWS = {
   jobs:    { el: () => $("jobs-view"), display: "grid",
              onShow: () => { loadBoards(); loadSearches(); loadJobs(); } },
   profile: { el: () => $("profile-view"), display: "grid",
-             onShow: () => { loadProfile(); loadGenerated(); } },
+             onShow: () => { loadProfile(); loadGenerated(); showBackupSize(); } },
 };
 
 document.querySelectorAll(".tab").forEach(tab => {
@@ -1168,6 +1202,76 @@ $("entries").addEventListener("click", async ev => {
     ev.target.disabled = false;
   }
 });
+
+// --------------------------------------------------------------------------------------
+// Backup and restore
+// --------------------------------------------------------------------------------------
+
+async function showBackupSize() {
+  try {
+    const p = await api("/backup/preview");
+    $("backup-size").textContent =
+      p.total + " records" + (p.files ? ", " + p.files + " PDFs" : "") + ".";
+  } catch (e) { /* the panel is still usable without the count */ }
+}
+
+$("b-export").onclick = async () => {
+  $("b-export").disabled = true;
+  $("backup-status").textContent = "Packing…";
+  try {
+    // Not api(): this is a file, not JSON, and it has to reach the disk rather than a
+    // variable. The token still rides along for a phone that is not on loopback.
+    const headers = apiToken ? { "X-LocalApply-Token": apiToken } : {};
+    const response = await fetch("/backup/export", { headers: headers });
+    if (!response.ok) throw new Error(response.status + " " + (await response.text()));
+
+    const blob = await response.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "localapply-" + new Date().toISOString().slice(0, 10) + ".zip";
+    link.click();
+    URL.revokeObjectURL(link.href);
+    $("backup-status").textContent = "Saved.";
+  } catch (e) {
+    $("backup-status").textContent = String(e.message || e);
+  } finally {
+    $("b-export").disabled = false;
+  }
+};
+
+$("b-import-label").onclick = () => $("import-file").click();
+
+$("import-file").onchange = async ev => {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+
+  // Restoring replaces everything. Asking once, in words that say what happens.
+  const sure = window.confirm(
+    "Restoring replaces everything here — your facts, documents, jobs and history — with "
+    + "what is in that file.\n\nThis cannot be undone. Continue?"
+  );
+  ev.target.value = "";
+  if (!sure) return;
+
+  $("backup-status").textContent = "Restoring…";
+  try {
+    const body = new FormData();
+    body.append("file", file);
+    const headers = apiToken ? { "X-LocalApply-Token": apiToken } : {};
+    const response = await fetch("/backup/import?replace=true", {
+      method: "POST", body: body, headers: headers
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || response.status);
+
+    $("backup-status").textContent = result.total + " records restored.";
+    await loadProfile();
+    await loadGenerated();
+    await showBackupSize();
+  } catch (e) {
+    $("backup-status").textContent = String(e.message || e);
+  }
+};
 
 // --------------------------------------------------------------------------------------
 // Start over: delete profile data

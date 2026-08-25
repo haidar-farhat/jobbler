@@ -257,3 +257,25 @@ async def test_the_add_job_form_is_wired(page):
         "typeof document.getElementById('b-add-job').onclick"
     ) == "function"
     assert _real_errors(errors) == []
+
+
+async def test_backup_and_restore_are_reachable_from_the_ui(page):
+    """"Back up first" is only useful advice if backing up is one click away at the moment
+    you are about to need it — which is why it sits beside the destructive button."""
+    view, errors = page
+    await view.click('.tab[data-view="profile"]')
+    await view.wait_for_timeout(200)
+
+    assert await view.query_selector("#b-export") is not None
+    assert await view.query_selector("#import-file") is not None
+    assert await view.evaluate("typeof document.getElementById('b-export').onclick") == "function"
+    assert _real_errors(errors) == []
+
+
+async def test_restoring_asks_before_replacing_everything(page):
+    view, _ = page
+    handler = await view.evaluate(
+        "document.getElementById('import-file').onchange.toString()"
+    )
+    assert "window.confirm" in handler
+    assert "cannot be undone" in handler

@@ -377,7 +377,54 @@ def choose_port(port: int, *, explicit: bool) -> int:
     raise SystemExit(1)
 
 
-def start_api(root: Path, python: Path, port: int) -> subprocess.Popen:
+def prepare_remote(root: Path, python: Path, token: str, port: int) -> tuple[str, str]:
+    """Work out how a phone reaches this machine, and refuse if the answer is unsafe.
+
+    Asks the app's own `remote` module rather than reimplementing the checks here. The
+    launcher and the API have to agree about what counts as safe to expose, and two copies
+    of that judgement drift -- with the copy that drifts being the one that says yes.
+    """
+    probe = (
+        "import json, sys; sys.path.insert(0, '.'); "
+        "from localapply.config import get_settings; from localapply import remote; "
+        "print(json.dumps(remote.check(get_settings()).as_dict()))"
+    )
+    code, out = run(
+        [str(python), "-c", probe],
+        cwd=root / "services" / "api",
+        timeout=60,
+    )
+    if code != 0:
+        die("Could not work out how your phone would reach this machine.", out.strip()[-400:])
+
+    try:
+        readiness = json.loads(out.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        die("Could not read the remote-access check.", out.strip()[-400:])
+
+    for problem in readiness.get("problems", []):
+        warn(problem)
+    for note in readiness.get("advice", []):
+        print(dim(f"      {note}"))
+
+    if not readiness.get("ready"):
+        die("Not starting with --remote.", "Fix the above first. Nothing was exposed.")
+
+    tunnels = readiness.get("tunnels", [])
+    best = next((t for t in tunnels if t["private"]), tunnels[0] if tunnels else None)
+    if best is None:
+        die("No way in was found.", "Install Tailscale, then run `tailscale up`.")
+
+    if not best["private"]:
+        warn(best["detail"])
+
+    ok(f"Reachable on {best['kind']} at {best['address']}")
+    # That address only. Binding 0.0.0.0 would also answer on every other network this
+    # machine happens to be attached to, which is not what "let my phone in" means.
+    return best["address"], f"http://{best['address']}:{port}/?token={token}"
+
+
+def start_api(root: Path, python: Path, port: int, host: str = "127.0.0.1") -> subprocess.Popen:
     api = root / "services" / "api"
 
     log_path = root / "var" / "launcher-api.log"
@@ -388,7 +435,8 @@ def start_api(root: Path, python: Path, port: int) -> subprocess.Popen:
         # Never --reload. On Windows uvicorn's reload mode runs on a SelectorEventLoop,
         # which cannot spawn subprocesses, so Playwright cannot start its driver and every
         # run dies with a bare NotImplementedError.
-        [str(python), "-m", "uvicorn", "localapply.main:app", "--port", str(port)],
+        [str(python), "-m", "uvicorn", "localapply.main:app",
+         "--host", host, "--port", str(port)],
         cwd=str(api),
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -457,6 +505,9 @@ def main() -> int:
                              "next free port when the default is taken.")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser.")
     parser.add_argument("--no-seed", action="store_true", help="Skip the profile seed check.")
+    parser.add_argument("--remote", action="store_true",
+                        help="Also answer your phone. Binds to your tunnel address "
+                             "instead of this machine only.")
     parser.add_argument("--show-token", action="store_true",
                         help="Print the API token and exit. Needed to pair a phone.")
     args = parser.parse_args()
@@ -509,10 +560,19 @@ def main() -> int:
     # to the next free one rather than refusing to start over a port nobody chose.
     asked_for_a_port = any(a == "--port" or a.startswith("--port=") for a in sys.argv[1:])
     port = choose_port(args.port, explicit=asked_for_a_port)
-    proc = start_api(root, python, port)
+
+    host, phone_url = "127.0.0.1", ""
+    if args.remote:
+        host, phone_url = prepare_remote(root, python, token, port)
+
+    proc = start_api(root, python, port, host)
 
     url = f"http://127.0.0.1:{port}/"
-    print(f"\n  {green('Ready')}  {url}\n")
+    print(f"\n  {green('Ready')}  {url}")
+    if phone_url:
+        print(f"  {green('Phone')}  {phone_url}")
+        print(dim("         Open that once; the token is remembered on that device."))
+    print()
     if not args.no_browser:
         webbrowser.open(url)
 

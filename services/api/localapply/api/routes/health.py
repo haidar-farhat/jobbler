@@ -124,6 +124,12 @@ async def health(
             "browser": _browser_status(runs, settings),
             "ai": await _ai_status(settings, model_router, resolved),
         },
+        "access": {
+            # Whether this is reachable from anywhere but here, and whether that is safe.
+            "token_required": bool(settings.api_token.strip()),
+            "bound_to": settings.bind_host,
+            "reachable_from_elsewhere": settings.bind_host not in {"127.0.0.1", "::1"},
+        },
         "safety": {
             "kill_switch": KILL_SWITCH.status(),
             # The single most important thing on this page: whether a submit would be real.
