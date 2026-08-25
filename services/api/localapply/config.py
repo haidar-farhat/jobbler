@@ -41,6 +41,17 @@ class Settings(BaseSettings):
     browser_timeout_ms: int = 15_000
     max_browser_sessions: int = 3
 
+    # --- Reading job postings ---
+    #: Minimum gap between two fetches of the same host. The first throttling of any kind in
+    #: this package, and the reason it exists is the stated posture: a tool that reads other
+    #: people's sites paces itself rather than being paced by them.
+    ingest_min_interval_s: float = 5.0
+    #: Off by default, and it matters. This API has no authentication, so a posting that
+    #: redirects the browser to http://localhost:8000/profile would land the entire accepted
+    #: fact set in a job description -- from where it flows into a prompt and then into a PDF
+    #: bound for a stranger. Turn it on only to point the ingester at a local test server.
+    ingest_allow_loopback: bool = False
+
     # --- AI ---
     #: "auto" (default) uses the local model when Ollama is running with one installed, and
     #: falls back to the scripted reasoner when it is not. Set "ollama" or "stub" to force

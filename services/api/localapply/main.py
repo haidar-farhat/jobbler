@@ -19,7 +19,16 @@ from .ai.providers.ollama import OllamaProvider
 from .ai.providers.stub import StubProvider
 from .ai.reasoner import LLMReasoner, StubReasoner
 from .ai.router import ModelRouter
-from .api.routes import agent, approvals, documents, events, generate, health, profile
+from .api.routes import (
+    agent,
+    approvals,
+    documents,
+    events,
+    generate,
+    health,
+    jobs,
+    profile,
+)
 from .browser.executor import BrowserExecutor
 from .browser.observer import Observer
 from .browser.session import BrowserManager
@@ -104,6 +113,31 @@ async def lifespan(app: FastAPI):
     await dispose_engine()
 
 
+def _register_error_handlers(app: FastAPI) -> None:
+    """Map the pipeline's domain errors onto HTTP once, centrally.
+
+    Registering these here is what lets every jobs handler stay a thin shell: a step that
+    asks for an illegal move raises, and the caller gets a 409 whose body names the states
+    that *are* legal from where the job actually is -- rather than each handler wrapping
+    every call in a try/except and paraphrasing the machine.
+    """
+    from fastapi.responses import JSONResponse
+
+    from .jobs.ingest import UnsafeURL
+    from .jobs.pipeline import WrongState
+    from .orchestrator.state_machine import InvalidTransition
+
+    async def _conflict(_request, exc):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    async def _bad_request(_request, exc):
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    app.add_exception_handler(InvalidTransition, _conflict)
+    app.add_exception_handler(WrongState, _conflict)
+    app.add_exception_handler(UnsafeURL, _bad_request)
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
@@ -125,8 +159,11 @@ def create_app() -> FastAPI:
     app.include_router(documents.router)
     app.include_router(generate.router)
     app.include_router(agent.router)
+    app.include_router(jobs.router)
     app.include_router(approvals.router)
     app.include_router(events.router)
+
+    _register_error_handlers(app)
 
     # Screenshots the observer captured, for the dashboard's live view.
     settings.ensure_dirs()

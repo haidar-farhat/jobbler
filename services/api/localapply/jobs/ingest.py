@@ -1,0 +1,302 @@
+"""Read one job posting the user asked for, through the browser, once.
+
+This is the first code in the tree that fetches a third-party page outside an agent run, so
+it is also the first place the project's stated posture has to be built rather than asserted:
+**refuse, do not evade.**
+
+  * One URL per ingest, and it is the one the *user typed*. A URL found in page content is
+    never followed, which removes attacker-directed fetching as a class rather than as a case.
+  * One navigation. No retry, no second session, no second attempt with different headers.
+  * No User-Agent, header, or cookie tampering. A plain Chromium context with no stored
+    session, so there is no logged-in account to get banned.
+  * A login wall or a CAPTCHA stores **nothing** and hands the page to the person. Getting
+    past one is their decision to make in their own browser, not something this code tries.
+  * Per-host pacing, with the wait held inside the lock so it also serialises ingestion.
+
+What it deliberately does not have: a `robots.txt` parser. There is none in this tree, and
+claiming to honour a file nothing reads would be worse than saying plainly that the
+mitigations above are what stands in its place.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import time
+from dataclasses import dataclass
+from urllib.parse import urlsplit
+from uuid import UUID, uuid4
+
+from ..browser.executor import BrowserExecutor
+from ..browser.observer import Observer
+from ..browser.session import BrowserManager
+from ..config import Settings
+from ..contracts import ActionType, Decision, EventType, Observation, PageKind
+from ..db import models as m
+from ..db.session import session_factory
+from ..events.bus import EventBus
+from ..policy.capabilities import capabilities_for
+from ..policy.engine import PolicyEngine
+from ..policy.rules import RunContext
+from ..safety import KILL_SWITCH, AutomationHalted
+
+#: Page kinds that mean "a person has to deal with this", never "try harder".
+WALLS: frozenset[PageKind] = frozenset({PageKind.LOGIN, PageKind.CAPTCHA, PageKind.ERROR})
+
+#: Hostnames that resolve to this machine regardless of what the address looks like.
+_LOCAL_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
+
+
+class UnsafeURL(ValueError):
+    """A URL this must not open. Refused before a browser is started."""
+
+
+@dataclass
+class IngestBlocked(RuntimeError):
+    """The page is a wall. Nothing was stored; a person takes it from here."""
+
+    page_kind: str
+    url: str
+
+    def __str__(self) -> str:
+        friendly = {
+            "login": "That page wants you to sign in first.",
+            "captcha": "That page is showing a CAPTCHA.",
+            "error": "That page did not load as a job posting.",
+        }
+        return friendly.get(self.page_kind, "That page could not be read automatically.")
+
+
+@dataclass
+class IngestResult:
+    text: str
+    page_kind: str
+    url: str
+    run_id: UUID
+
+
+def check_url(url: str, *, allow_loopback: bool) -> str:
+    """Refuse anything that is not a plain public web page.
+
+    This API has no authentication, so a posting that redirects the browser to
+    `http://127.0.0.1:8000/profile` would put the entire accepted-fact set into a job
+    description -- from where it flows into a cover-letter prompt and a PDF bound for a
+    third party. That is why loopback is refused by default rather than allowed for
+    convenience.
+
+    Known limit, written down rather than assumed: this checks the URL, not the address the
+    host actually resolves to at connect time, so DNS rebinding is not covered.
+    """
+    parts = urlsplit((url or "").strip())
+    if parts.scheme not in {"http", "https"}:
+        raise UnsafeURL(f"Only http and https URLs can be opened, not {parts.scheme or 'that'!r}.")
+    if "@" in (parts.netloc or ""):
+        raise UnsafeURL("A URL with credentials in it will not be opened.")
+    host = (parts.hostname or "").strip().lower()
+    if not host:
+        raise UnsafeURL("That URL has no host.")
+
+    if allow_loopback:
+        return url.strip()
+
+    if host in _LOCAL_NAMES or host.endswith(".localhost"):
+        raise UnsafeURL("That URL points back at this machine.")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return url.strip()
+    if (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_unspecified
+    ):
+        raise UnsafeURL(f"{host} is a private or local address and will not be opened.")
+    return url.strip()
+
+
+#: Per-host pacing. The sleep is held *inside* the lock, so it also has the effect of
+#: serialising ingestion to one page at a time -- which is the behaviour a site sees.
+_LAST_FETCH: dict[str, float] = {}
+_PACE_LOCK = asyncio.Lock()
+
+
+async def _pace(host: str, interval: float) -> None:
+    async with _PACE_LOCK:
+        elapsed = time.monotonic() - _LAST_FETCH.get(host, 0.0)
+        if elapsed < interval:
+            await asyncio.sleep(interval - elapsed)
+        _LAST_FETCH[host] = time.monotonic()
+
+
+async def fetch_description(
+    *,
+    browser: BrowserManager,
+    bus: EventBus,
+    settings: Settings,
+    job: m.Job,
+    application_id: UUID,
+) -> IngestResult:
+    """Open the user's URL, read the page text, close the browser.
+
+    Takes a `BrowserManager`, never a `RunManager`: the orchestrator imports the browser
+    layer and not the reverse, and inverting that here would be both a layering violation
+    and a circular import waiting to happen.
+    """
+    if KILL_SWITCH.engaged:
+        raise AutomationHalted(KILL_SWITCH.reason or "Automation stopped.")
+
+    problem = BrowserManager.check_event_loop()
+    if problem:
+        raise RuntimeError(problem)
+
+    url = check_url(job.url, allow_loopback=settings.ingest_allow_loopback)
+    host = (urlsplit(url).hostname or "").lower()
+    await _pace(host, settings.ingest_min_interval_s)
+
+    run_id = uuid4()
+    await _record_run(run_id, application_id, url)
+    await bus.emit(run_id, EventType.RUN_STARTED, f"Reading {url}", agent="discovery")
+
+    try:
+        session = await browser.new_session()
+    except RuntimeError as exc:
+        await bus.emit(run_id, EventType.RUN_FAILED, str(exc), agent="discovery")
+        await _finish_run(run_id, "failed", str(exc))
+        raise
+
+    try:
+        # The loop synthesises exactly this for its own opening navigation: there is no page
+        # yet, so there is nothing to have observed.
+        seed = Observation(run_id=run_id, url="about:blank", title="")
+        context = RunContext(
+            agent="discovery",
+            capabilities=capabilities_for("discovery"),
+            max_actions=1,
+            min_confidence=settings.min_decision_confidence,
+            dry_run=settings.dry_run,
+        )
+        decision = Decision(
+            action=ActionType.NAVIGATE,
+            value=url,
+            confidence=1.0,
+            reason="Reading the posting the user asked for.",
+        )
+
+        # An ingest is structurally incapable of typing, selecting, uploading or submitting:
+        # the capability set says so. `granted_approvals` is left empty, so a verdict of
+        # REQUIRE_APPROVAL is a hard stop here rather than a prompt.
+        verdict = PolicyEngine().evaluate(decision, seed, context)
+        if verdict.blocks_execution:
+            raise IngestBlocked(page_kind="error", url=url)
+
+        result = await BrowserExecutor(settings).execute(decision, seed, session)
+        await _record_action(run_id, session.session_id, decision, result)
+        await bus.emit(
+            run_id, EventType.ACTION_RESULT,
+            f"Opened {url}" if result.success else f"Could not open {url}",
+            agent="discovery",
+        )
+        if not result.success:
+            raise IngestBlocked(page_kind="error", url=url)
+
+        observation = await Observer(settings).observe(session, run_id, screenshot=False)
+
+        # The post-redirect check. A posting that 302s somewhere private must be refused
+        # *before* a single byte of it is written to the job row.
+        check_url(observation.url, allow_loopback=settings.ingest_allow_loopback)
+
+        if observation.page_kind in WALLS:
+            raise IngestBlocked(page_kind=observation.page_kind.value, url=observation.url)
+
+        text = observation.untrusted_text.strip()
+        if len(text) < MIN_DESCRIPTION_CHARS:
+            raise IngestBlocked(page_kind="error", url=observation.url)
+
+        await bus.emit(run_id, EventType.RUN_FINISHED,
+                       f"Read {len(text)} characters.", agent="discovery")
+        await _finish_run(run_id, "finished", None)
+        return IngestResult(
+            text=text, page_kind=observation.page_kind.value, url=observation.url,
+            run_id=run_id,
+        )
+    except IngestBlocked as blocked:
+        await bus.emit(run_id, EventType.RUN_FINISHED, str(blocked), agent="discovery")
+        await _finish_run(run_id, "finished", str(blocked))
+        raise
+    except Exception as exc:  # noqa: BLE001 - the run row must record why, whatever happened
+        await bus.emit(run_id, EventType.RUN_FAILED, str(exc), agent="discovery")
+        await _finish_run(run_id, "failed", f"{exc.__class__.__name__}: {exc}")
+        raise
+    finally:
+        # One session, always released. A capped slot leaked here would eventually make the
+        # agent unable to run at all.
+        await browser.close_session(session.session_id)
+
+
+#: Below this a "posting" is a redirect stub, a cookie banner, or a spinner. Refusing it is
+#: better than storing it: an empty description scores zero and looks like a real answer.
+MIN_DESCRIPTION_CHARS = 200
+
+
+# --------------------------------------------------------------------------------------
+# The durable record. The event bus is an in-memory ring, so these rows are what survives.
+# --------------------------------------------------------------------------------------
+
+
+async def _record_run(run_id: UUID, application_id: UUID, url: str) -> None:
+    async with session_factory()() as session:
+        session.add(
+            m.AgentRun(
+                id=run_id,
+                application_id=application_id,
+                agent="discovery",
+                goal="Read this job posting.",
+                status="running",
+                start_url=url,
+            )
+        )
+        await session.commit()
+
+
+async def _finish_run(run_id: UUID, status: str, error: str | None) -> None:
+    from datetime import UTC, datetime
+
+    async with session_factory()() as session:
+        run = await session.get(m.AgentRun, run_id)
+        if run is None:
+            return
+        run.status = status
+        run.error = error
+        run.finished_at = datetime.now(UTC)
+        session.add(run)
+        await session.commit()
+
+
+async def _record_action(run_id: UUID, session_id: UUID, decision, result) -> None:
+    async with session_factory()() as session:
+        session.add(
+            m.BrowserAction(
+                run_id=run_id,
+                session_id=session_id,
+                action=decision.action.value,
+                target_ref=decision.target_ref,
+                value=decision.value,
+                success=result.success,
+                error=result.error,
+                duration_ms=result.duration_ms,
+            )
+        )
+        await session.commit()
+
+
+__all__ = [
+    "MIN_DESCRIPTION_CHARS",
+    "WALLS",
+    "IngestBlocked",
+    "IngestResult",
+    "UnsafeURL",
+    "check_url",
+    "fetch_description",
+]

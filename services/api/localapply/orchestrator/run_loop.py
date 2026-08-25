@@ -46,7 +46,7 @@ from ..policy.engine import PolicyEngine
 from ..policy.field_classifier import FieldClass, classify
 from ..policy.rules import RunContext, action_signature, decision_fingerprint
 from ..safety import KILL_SWITCH, AutomationHalted
-from .state_machine import ApplicationState, InvalidTransition, transition
+from .state_machine import TERMINAL_STATES, ApplicationState, InvalidTransition, transition
 
 logger = logging.getLogger(__name__)
 
@@ -801,13 +801,67 @@ class RunManager:
         # same question twice.
         if status in {"failed", "stopped"} and not handle.error:
             handle.error = reason
+        # Closing the browser stays first. The kill switch's one job is to free the page the
+        # agent is on, and queueing that behind two database round-trips would make "stop"
+        # slower than it has any reason to be.
         await self._close_session(handle)
+        await self._settle_application(handle)
         await self._update_run(
             handle.run_id,
             status=status,
             error=reason if status in {"failed", "stopped"} else None,
             actions_executed=handle.policy.actions_executed,
             finished_at=datetime.now(UTC),
+        )
+
+    async def _settle_application(self, handle: RunHandle) -> None:
+        """Leave the application row saying what actually happened to it.
+
+        Without this the row froze wherever the run happened to be when it ended, so a job
+        whose submit you declined still read `safe_fields_filled` days later -- and the
+        board could not tell "I said no" from "still running".
+
+        Two outcomes only:
+
+          * A genuine failure -- an exhausted action budget, an unhandled exception -- is
+            FAILED.
+          * Everything else recoverable is BLOCKED with somewhere to come back to: a user
+            stop, the kill switch, a declined ASK_USER, a FINISH that never submitted. One
+            press of `/jobs/{id}/unblock` puts the job back a click away from a fresh run.
+
+        CANCELLED is deliberately never written here. It is terminal -- `TRANSITIONS`
+        gives it no way out -- so mapping a transport-level stop onto it would mean one
+        press of the big red button permanently destroyed every in-flight application.
+        """
+        if handle.application_id is None or handle.state in TERMINAL_STATES:
+            return
+
+        if handle.status == "failed":
+            await self._transition(handle, S.FAILED, tolerant=True)
+            return
+
+        await self._update_application(
+            handle.application_id, resume_state=S.READY_FOR_BROWSER.value
+        )
+        # `tolerant` is right here and nowhere else: BLOCKED is legal from every
+        # non-terminal state, so the only move it can swallow is one onto a row that has
+        # already reached a terminal state -- which is exactly the intent.
+        await self._transition(handle, S.BLOCKED, tolerant=True)
+
+    def live_for(self, application_id: UUID) -> RunHandle | None:
+        """The run currently using this application, if any.
+
+        The transition table cannot answer this: several states legally lead back into the
+        pipeline, so "is a run using this row" is a fact about memory, not about the machine.
+        """
+        return next(
+            (
+                handle
+                for handle in self._runs.values()
+                if handle.application_id == application_id
+                and handle.status in {"running", "paused", "waiting_approval"}
+            ),
+            None,
         )
 
     async def _close_session(self, handle: RunHandle) -> None:

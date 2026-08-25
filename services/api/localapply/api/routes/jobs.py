@@ -30,7 +30,7 @@ from ...events.bus import EventBus
 from ...jobs import pipeline as P
 from ...orchestrator.run_loop import RunManager
 from ...orchestrator.state_machine import ApplicationState as S
-from ...safety import KILL_SWITCH
+from ...safety import KILL_SWITCH, AutomationHalted
 from ..deps import get_app_settings, get_bus, get_router, get_run_manager
 from .generate import _summary as document_summary
 from .profile import current_profile, load_reasoning_context
@@ -198,9 +198,11 @@ async def list_jobs(
             return False
         if min_score is not None and (job.match_score or 0.0) < min_score:
             return False
-        if recommendation is not None:
-            if (job.match_breakdown or {}).get("recommendation") != recommendation:
-                return False
+        if (
+            recommendation is not None
+            and (job.match_breakdown or {}).get("recommendation") != recommendation
+        ):
+            return False
         if q:
             needle = q.casefold()
             haystack = f"{job.title} {job.company or ''}".casefold()
@@ -513,14 +515,20 @@ async def apply(
     context = await load_reasoning_context(session, payload.goal)
     context.job_title = job.title
     context.company = job.company
+    if document is not None and document.pdf_path:
+        # The upload action reads this key. Pointing it at the CV written *for this posting*
+        # is the whole reason the documents step exists.
+        context.profile["resume_path"] = document.pdf_path
 
-    handle = await runs.start(
-        start_url=job.url,
-        goal=payload.goal,
-        reasoning=context,
-        application_id=application.id,
-        resume_path=str(document.pdf_path) if document else None,
-    )
+    try:
+        handle = await runs.start(
+            start_url=job.url,
+            goal=payload.goal,
+            reasoning=context,
+            application_id=application.id,
+        )
+    except AutomationHalted as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {
         **handle.snapshot(),
         "job_id": str(job.id),

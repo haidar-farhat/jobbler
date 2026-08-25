@@ -3,6 +3,10 @@
 Transitions are validated **here and nowhere else**. Agent code never writes
 `applications.state` directly -- it calls `transition()`, which raises on an illegal move.
 That is what makes the state column trustworthy enough to drive the UI and the audit log.
+
+Two wrappers call it, and only two: `jobs.pipeline.advance` for the pre-browser half, and
+`RunManager._transition` once a browser is involved. Creating a row seeds the initial state
+from the column default and is not a transition -- there is nothing to transition from.
 """
 
 from __future__ import annotations
@@ -77,8 +81,14 @@ def _build_transitions() -> dict[ApplicationState, frozenset[ApplicationState]]:
     # a login wall re-enters the happy path *before* the review gate and passes through it
     # again, so REVIEW_REQUIRED remains the only predecessor of SUBMITTING.
     table[S.BLOCKED].add(S.USER_INTERVENTION)
+    # REVIEW_REQUIRED is excluded alongside SUBMITTING and SUBMITTED, or the comment above
+    # is not true: resuming straight onto the gate state would let a run that detoured
+    # through a CAPTCHA arrive at the point where the only thing left is to submit, without
+    # having re-filled and re-checked anything. The run loop never uses that edge -- it
+    # resumes to FORM_ANALYZED -- so removing it costs nothing and closes the side door.
     table[S.USER_INTERVENTION] |= {
-        s for s in _HAPPY_PATH if s not in {S.SUBMITTING, S.SUBMITTED}
+        s for s in _HAPPY_PATH
+        if s not in {S.REVIEW_REQUIRED, S.SUBMITTING, S.SUBMITTED}
     }
     table[S.USER_INTERVENTION] |= {S.FAILED, S.CANCELLED}
 

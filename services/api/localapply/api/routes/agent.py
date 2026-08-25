@@ -11,6 +11,7 @@ from sqlmodel import select
 
 from ...db import models as m
 from ...db.session import get_session
+from ...jobs import pipeline as P
 from ...orchestrator.run_loop import RunManager
 from ...orchestrator.state_machine import ApplicationState
 from ...safety import KILL_SWITCH, AutomationHalted
@@ -49,36 +50,49 @@ async def start_run(
     if profile is None:
         raise HTTPException(400, "Create a profile before running the agent.")
 
-    job = m.Job(
+    # The same pipeline the jobs board walks, rather than a second path that jumped
+    # straight to READY_FOR_BROWSER. That shortcut was the reason seven states existed only
+    # as enum members, and the reason `applications.state` had two writers.
+    job, application = await P.create_job(
+        session,
+        profile,
         url=payload.start_url,
         title=payload.job_title or "Untitled role",
         company=payload.company,
-        description=payload.description or None,
+        location=None,
+        description=payload.description,
+        source="fixture",
+        external_id=None,
     )
-    session.add(job)
-    await session.commit()
-
-    application = m.Application(
-        job_id=job.id,
-        profile_id=profile.id,
-        state=ApplicationState.READY_FOR_BROWSER.value,
-    )
-    session.add(application)
-    await session.commit()
+    await P.advance(session, application, ApplicationState.PARSED,
+                    detail={"via": "start_run"})
+    # Deliberately unconditional. The dashboard's Start button sends no description, and an
+    # empty one scores zero with a "skip" recommendation rather than raising -- so gating
+    # this on there being text is what would make the app's oldest entry point illegal.
+    await P.analyze_and_score(session, job, application, source="web")
+    # Starting a run *is* the human act of approving it; there is no separate gate on this
+    # path, and the audit row says which path it came from.
+    await P.advance(session, application, ApplicationState.USER_APPROVED,
+                    detail={"via": "start_run"})
 
     context = await load_reasoning_context(session, payload.goal)
     context.job_title = payload.job_title
     context.company = payload.company
 
+    await P.advance(session, application, ApplicationState.DOCUMENTS_GENERATING)
     tailored: dict | None = None
     if payload.tailor_cv and payload.job_title:
         # Generate a CV for this specific job and point the upload at it, so the agent
         # attaches a document tailored to the posting rather than a stale generic file.
         # A failure here must not block the run: it falls back to the existing resume_path
         # and says so in the response.
-        tailored = await _tailored_cv(session, runs.settings, profile.id, job, payload)
+        tailored = await _tailored_cv(session, runs.settings, profile, job, payload)
         if tailored and tailored.get("pdf_path"):
             context.profile["resume_path"] = tailored["pdf_path"]
+    # Written even when tailoring was skipped or failed, preserving the "applied with your
+    # existing CV" contract -- and keeping READY_FOR_BROWSER reachable only through here.
+    await P.advance(session, application, ApplicationState.READY_FOR_BROWSER,
+                    detail={"tailored": bool(tailored and tailored.get("pdf_path"))})
 
     try:
         handle = await runs.start(
@@ -90,81 +104,57 @@ async def start_run(
     except AutomationHalted as exc:
         raise HTTPException(409, str(exc)) from exc
 
-    return {**handle.snapshot(), "tailored_cv": tailored}
+    return {
+        **handle.snapshot(),
+        "tailored_cv": tailored,
+        "job_id": str(job.id),
+        "application_id": str(application.id),
+    }
 
 
-async def _tailored_cv(session, settings, profile_id, job, payload) -> dict:
+async def _tailored_cv(session, settings, profile, job, payload) -> dict:
     """Build and store a tailored CV for this job.
 
     Kept off the run's critical path on purpose: a document problem should degrade to
     "applied with your existing CV", not "could not apply". Every failure path returns an
     explanation rather than raising.
-    """
-    from ...documents.generator import (
-        DocumentGenerator,
-        UngroundedDocument,
-        assert_grounded,
-    )
-    from ...documents.render import render_html, render_pdf
-    from ...profile.facts import FactStatus
 
-    facts = list(
-        (
-            await session.execute(
-                select(m.ProfileFact).where(
-                    m.ProfileFact.profile_id == profile_id,
-                    m.ProfileFact.status == FactStatus.ACCEPTED.value,
-                )
-            )
-        ).scalars().all()
-    )
-    if not facts:
-        return {"error": "No accepted profile facts, so no CV was generated."}
+    The work itself is `documents.pipeline.build_document`, shared with `POST /generate` and
+    the jobs board. This used to be a third copy, and it had drifted: it hardcoded
+    `version=1`, so a second run for the same job reused the version number, and it never
+    set `pdf_sha256`, so a CV the app had generated was not recognised as its own output
+    when it came back in through the importer.
+    """
+    from ...documents.pipeline import NoAcceptedFacts, UngroundedDocument, build_document
 
     try:
-        plan = DocumentGenerator().tailored_cv(
-            facts,
+        result = await build_document(
+            session,
+            settings,
+            profile,
+            kind="tailored_cv",
             job_title=payload.job_title,
             company=payload.company,
             description=payload.description,
+            job_id=job.id,
         )
-        assert_grounded(plan, {f.id for f in facts})
-    except UngroundedDocument as exc:
+    except NoAcceptedFacts:
+        return {"error": "No accepted profile facts, so no CV was generated."}
+    except (UngroundedDocument, ValueError) as exc:
         return {"error": str(exc)}
 
-    document = m.GeneratedDocument(
-        profile_id=profile_id,
-        job_id=job.id,
-        kind="tailored_cv",
-        version=1,
-        title=plan.title,
-        job_title=plan.job_title,
-        company=plan.company,
-        html=render_html(plan),
-        fact_ids=[str(fid) for fid in sorted(plan.fact_ids, key=str)],
-        match_score=plan.match.score if plan.match else None,
-        match_breakdown=plan.match.as_dict() if plan.match else {},
-    )
-    session.add(document)
-    await session.commit()
-
-    try:
-        settings.ensure_dirs()
-        path = settings.data_dir / "generated" / f"{document.id}.pdf"
-        await render_pdf(plan, path)
-        document.pdf_path = str(path)
-        session.add(document)
-        await session.commit()
-    except Exception as exc:  # noqa: BLE001 - degrade to the existing CV
+    document = result.document
+    if result.pdf_error:
         return {
             "id": str(document.id),
             "match_score": document.match_score,
-            "error": f"PDF rendering failed ({exc.__class__.__name__}); "
+            "error": f"PDF rendering failed ({result.pdf_error}); "
                      "the run will upload your existing CV.",
         }
 
     return {
         "id": str(document.id),
+        "version": document.version,
         "match_score": document.match_score,
         "match": document.match_breakdown,
         "pdf_path": document.pdf_path,
