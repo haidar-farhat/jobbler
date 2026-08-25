@@ -126,20 +126,63 @@ _ENUMERATE_JS = r"""
     url: window.location.href,
     text: (document.body ? document.body.innerText : '').slice(0, 20000),
     elements,
-    has_captcha_frame: !!document.querySelector(
-      'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[title*="captcha" i]'
-    )
+    // A captcha *challenge*, not a captcha *script*. Every modern application form loads
+    // reCAPTCHA v3, which runs invisibly and asks the visitor for nothing -- and the old
+    // check, "is there a recaptcha iframe", was true on every single one of them. Verified
+    // against real Greenhouse and Ashby forms: both carry an `anchor` frame with
+    // `size=invisible`, and both were being refused as CAPTCHA walls. That made the agent
+    // unusable on every real site it would ever be pointed at.
+    //
+    // What actually requires a person:
+    //   * a `bframe` -- the "select all the traffic lights" popup -- when it is on screen;
+    //   * an anchor frame that is NOT size=invisible: the v2 "I'm not a robot" checkbox,
+    //     which has to be clicked.
+    // An invisible v3 frame, and the little badge in the corner, require nothing.
+    has_captcha_frame: (() => {
+      const frames = Array.from(document.querySelectorAll('iframe')).filter(
+        f => /recaptcha|hcaptcha|turnstile/i.test(f.src || '')
+             || /captcha/i.test(f.title || '')
+      );
+      return frames.some(f => {
+        const src = f.src || '';
+        if (/[?&]size=invisible/i.test(src)) return false;
+        const rect = f.getBoundingClientRect();
+        const style = window.getComputedStyle(f);
+        const onScreen = style.visibility !== 'hidden' && style.display !== 'none'
+                         && rect.width > 0 && rect.height > 0;
+        if (!onScreen) return false;
+        // The challenge popup, whatever its size.
+        if (/\/bframe/i.test(src)) return true;
+        // A visible checkbox widget. The v3 badge is inert, so it is excluded by the
+        // size=invisible test above rather than by guessing at its dimensions.
+        return true;
+      });
+    })()
   };
 }
 """
 
-_CAPTCHA_TEXT = re.compile(r"\b(captcha|i'?m not a robot|verify you are human)\b", re.IGNORECASE)
+#: Text that means a person is being challenged, as opposed to text that merely mentions
+#: the word. Every application form carries "protected by reCAPTCHA" boilerplate in its
+#: footer, and matching a bare "captcha" on that refused every real form on the internet.
+_CAPTCHA_TEXT = re.compile(
+    r"((i'?m|you'?re|you are) not a robot|verify (that )?you (are|'re) (a )?human|are you a robot"
+    r"|select all (images|squares)|complete the (captcha|security check)"
+    r"|captcha (challenge|verification) (failed|required))",
+    re.IGNORECASE,
+)
 _CONFIRM_TEXT = re.compile(
     r"(thank you for applying|application (has been )?(received|submitted|sent)"
     r"|we'?ve received your application|successfully submitted)",
     re.IGNORECASE,
 )
 _LOGIN_TEXT = re.compile(r"\b(sign in|log in|login)\b", re.IGNORECASE)
+
+
+#: A page with this many links and nothing to type into is a list of jobs. Eight is well
+#: above any application form (which has a handful of navigation links at most) and well
+#: below any real board, which lists dozens.
+MANY_LINKS = 8
 
 
 def infer_page_kind(
@@ -175,14 +218,37 @@ def infer_page_kind(
         }
         and e.visible
     ]
+    # A CV upload is the one thing only an application form has.
     has_file_input = any(e.role is ElementRole.FILE_INPUT for e in elements)
-    if has_file_input or len(fillable) >= 3:
+    if has_file_input:
+        return PageKind.APPLICATION_FORM
+
+    links = [e for e in elements if e.role is ElementRole.LINK and e.visible]
+    typeable = [
+        e for e in fillable if e.role in {ElementRole.TEXTBOX, ElementRole.TEXTAREA}
+    ]
+
+    # Checked *before* the form test, and this order is the fix. A real Ashby board has
+    # four comboboxes -- Department, Employment, Location, Location Type -- which are
+    # filters, and "three or more fillable things" called that page an application form.
+    # The run loop transitions to FORM_ANALYZED on that, so a listing page advanced the
+    # state machine as though it were a form to fill in.
+    #
+    # What actually separates them is not how many widgets there are but what they are: a
+    # listing is dominated by links and has almost nothing to type into.
+    if len(links) >= MANY_LINKS and len(typeable) <= 1:
+        return PageKind.JOB_LISTING
+
+    if len(fillable) >= 3:
         return PageKind.APPLICATION_FORM
 
     if re.search(r"/jobs?/(view|detail)|/careers?/", url, re.IGNORECASE):
         return PageKind.JOB_DETAIL
 
-    job_links = sum(1 for e in elements if e.role is ElementRole.LINK and "job" in e.name.lower())
+    # Kept as a weaker fallback. It rarely fires on a real board: listing links are job
+    # *titles* ("Account Executive, Commercial"), which do not contain the word "job" --
+    # which is why a real Greenhouse board came back UNKNOWN before the rule above existed.
+    job_links = sum(1 for e in links if "job" in e.name.lower())
     if job_links >= 3:
         return PageKind.JOB_LISTING
 

@@ -183,3 +183,118 @@ async def test_submit_is_simulated_under_dry_run(settings, form_page):
     assert result.success and result.simulated
     # Still on the form. The confirmation page was never reached.
     assert "apply.html" in session.page.url
+
+
+# --------------------------------------------------------------------------------------
+# What real job boards actually look like
+#
+# Everything above this line is verified against `evaluation/fixtures/`, a page we wrote.
+# Running the observer against real Greenhouse, Lever and Ashby pages found two ways the
+# heuristics were wrong -- and the first of them made the agent useless on every real site
+# it would ever be pointed at.
+# --------------------------------------------------------------------------------------
+
+from localapply.browser.observer import MANY_LINKS, infer_page_kind
+from localapply.contracts import ObservedElement
+
+
+def el(ref: str, role: ElementRole, name: str = "", **kw) -> ObservedElement:
+    return ObservedElement(ref=ref, role=role, name=name, **kw)
+
+
+def test_an_invisible_recaptcha_is_not_a_wall():
+    """THE finding. Every modern application form loads reCAPTCHA v3, which runs invisibly
+    and asks the visitor for nothing. "Is there a recaptcha iframe" was true on every real
+    Greenhouse and Ashby form tested, so every one of them was refused as a CAPTCHA -- and
+    a CAPTCHA parks the job and hands it to a human, which means the agent never worked on
+    a real site at all.
+
+    The frame test now lives in the page script; this pins the consequence.
+    """
+    form = [el(f"e{i}", ElementRole.TEXTBOX, "First name") for i in range(4)]
+    assert infer_page_kind(
+        "https://job-boards.greenhouse.io/vercel/jobs/1",
+        "Job Application for Account Executive at Vercel",
+        "Apply for this job. This site is protected by reCAPTCHA and the Google "
+        "Privacy Policy and Terms of Service apply.",
+        form,
+        captcha_frame=False,
+    ) is PageKind.APPLICATION_FORM
+
+
+def test_boilerplate_mentioning_recaptcha_is_not_a_challenge():
+    """The footer of essentially every form on the internet."""
+    assert infer_page_kind(
+        "https://example.com/apply",
+        "Apply",
+        "This site is protected by reCAPTCHA and the Google Privacy Policy applies.",
+        [el("e1", ElementRole.TEXTBOX, "Email")],
+        captcha_frame=False,
+    ) is not PageKind.CAPTCHA
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Please confirm you're not a robot to continue",
+     "Verify you are human before submitting",
+     "Select all images with traffic lights"],
+)
+def test_an_actual_challenge_is_still_a_wall(text):
+    """Narrowing the pattern must not blind it. Getting past one of these is the person's
+    decision to make in their own browser."""
+    assert infer_page_kind(
+        "https://example.com/apply", "Apply", text, [], captcha_frame=False
+    ) is PageKind.CAPTCHA
+
+
+def test_a_captcha_frame_still_wins_over_everything():
+    assert infer_page_kind(
+        "https://example.com/apply", "Apply", "Nothing suspicious here",
+        [el("e1", ElementRole.TEXTBOX, "Email")], captcha_frame=True,
+    ) is PageKind.CAPTCHA
+
+
+def test_a_board_full_of_filter_dropdowns_is_a_listing_not_a_form():
+    """Verified on jobs.ashbyhq.com/linear: four comboboxes -- Department, Employment,
+    Location, Location Type -- and thirty-seven job links. "Three or more fillable things"
+    called that an application form, and the run loop advances to FORM_ANALYZED on that."""
+    page = [
+        el("e1", ElementRole.COMBOBOX, "Department"),
+        el("e2", ElementRole.COMBOBOX, "Employment"),
+        el("e3", ElementRole.COMBOBOX, "Location"),
+        el("e4", ElementRole.COMBOBOX, "Location Type"),
+        *[el(f"e{i}", ElementRole.LINK, "Senior Engineer") for i in range(5, 5 + MANY_LINKS)],
+    ]
+    assert infer_page_kind(
+        "https://jobs.ashbyhq.com/linear", "Linear Jobs", "Open roles", page,
+        captcha_frame=False,
+    ) is PageKind.JOB_LISTING
+
+
+def test_a_listing_is_recognised_even_though_no_link_says_the_word_job():
+    """Real listing links are job *titles*. The old rule looked for "job" in the link text,
+    which is why a real Greenhouse board came back UNKNOWN."""
+    page = [
+        el("e1", ElementRole.TEXTBOX, "Search"),
+        *[el(f"e{i}", ElementRole.LINK, "Account Executive, Commercial")
+          for i in range(2, 2 + MANY_LINKS)],
+    ]
+    assert infer_page_kind(
+        "https://job-boards.greenhouse.io/vercel", "Jobs at Vercel", "", page,
+        captcha_frame=False,
+    ) is PageKind.JOB_LISTING
+
+
+def test_a_real_form_is_not_mistaken_for_a_listing():
+    """The other direction. A form has a handful of navigation links and plenty to type in."""
+    page = [
+        el("e1", ElementRole.LINK, "Back to jobs"),
+        el("e2", ElementRole.TEXTBOX, "First Name"),
+        el("e3", ElementRole.TEXTBOX, "Last Name"),
+        el("e4", ElementRole.TEXTBOX, "Email"),
+        el("e5", ElementRole.FILE_INPUT, "Resume"),
+    ]
+    assert infer_page_kind(
+        "https://job-boards.greenhouse.io/vercel/jobs/1", "Job Application", "", page,
+        captcha_frame=False,
+    ) is PageKind.APPLICATION_FORM
