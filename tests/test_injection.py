@@ -199,9 +199,10 @@ def test_neutralise_defangs_without_deleting():
 
 
 def test_a_very_long_title_cannot_bury_the_instructions():
+    from uuid import uuid4
+
     from localapply.ai.reasoner import LLMReasoner, ReasoningContext
     from localapply.contracts import Observation
-    from uuid import uuid4
 
     observation = Observation(
         run_id=uuid4(), url="https://x/apply", title="A" * 50_000, untrusted_text="hi"
