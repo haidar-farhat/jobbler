@@ -505,8 +505,11 @@ const jobsErr = msg => {
 const JOB_ACTIONS = {
   discovered: [["ingest", "Add description"]],
   parsed: [["analyze", "Score it"]],
-  analyzed: [["analyze", "Score it"]],
-  scored: [["analyze", "Score it"]],
+  // `analyzed` and `scored` are steps *inside* one /analyze request. A job only stays in
+  // one of them if the process died mid-walk, and /analyze cannot resume from there -- so
+  // offering "Score it" would be a button that answers 409. Cancelling is the way out.
+  analyzed: [["cancel", "Not interested"]],
+  scored: [["cancel", "Not interested"]],
   recommended: [["approve", "Approve"], ["cancel", "Not interested"]],
   user_approved: [["documents", "Write my CV"], ["cancel", "Not interested"]],
   ready_for_browser: [["apply", "Apply with the agent"], ["cancel", "Not interested"]],
