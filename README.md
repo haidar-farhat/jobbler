@@ -15,9 +15,12 @@ Python, no model — decides. The executor performs mechanical Playwright operat
 interprets nothing. Every step is appended to a log that drives both the live dashboard and
 offline replay.
 
-**Status: walking skeleton.** The whole loop runs end to end against a local HTML fixture,
-driven by a deterministic scripted reasoner. Real models and real job sites slot in behind
-interfaces that are proven working first.
+**Status: the loop, your CV, and your documents.** The whole agent loop runs end to end
+against a local HTML fixture, driven either by a deterministic scripted reasoner or by a
+local model through Ollama. Your CV is parsed into individually-approved facts you can
+correct by hand, and tailored CVs and cover letters are generated from them — grounded, so
+every line traces to a fact you accepted. Real job sites are still out of scope on purpose;
+see [Not built yet](#not-built-yet).
 
 - [Architecture](docs/architecture.md)
 - [Agent protocol](docs/agent-protocol.md)
@@ -140,9 +143,15 @@ Copy-Item ..\..\.env.example ..\..\.env
 # 4. Seed a profile
 .\.venv\Scripts\python.exe scripts\dev_bootstrap.py
 
-# 5. API — leave this running
-.\.venv\Scripts\python.exe -m uvicorn localapply.main:app --reload --port 8000
+# 5. API — leave this running. Note: no --reload, see below.
+.\.venv\Scripts\python.exe -m uvicorn localapply.main:app --port 8000
 ```
+
+> **Never start the API with `--reload` on Windows.** Reload mode runs uvicorn on a
+> `SelectorEventLoop`, and `asyncio.create_subprocess_exec` is not implemented there — so
+> Playwright cannot spawn its driver and every run dies with a bare `NotImplementedError`.
+> The API itself looks perfectly healthy. `dev.ps1` and the launcher both refuse to pass the
+> flag, and `/health` reports the problem if you somehow end up on the wrong loop.
 
 Dashboard, in a second terminal **from the repo root** (needs Node):
 
@@ -172,7 +181,7 @@ cp ../../.env.example ../../.env
 ./.venv/Scripts/python.exe -m alembic revision --autogenerate -m "initial schema"
 ./.venv/Scripts/python.exe -m alembic upgrade head
 ./.venv/Scripts/python.exe scripts/dev_bootstrap.py
-./.venv/Scripts/python.exe -m uvicorn localapply.main:app --reload --port 8000
+./.venv/Scripts/python.exe -m uvicorn localapply.main:app --port 8000   # no --reload, see above
 ```
 
 Open <http://localhost:5173>.
@@ -232,14 +241,18 @@ What is covered:
 | `test_generation.py` | Grounding refuses an item citing nothing or citing an unaccepted fact; proposed/rejected/superseded facts never render; tailoring never adds |
 | `test_generation_api.py` | Versions increment and never overwrite; provenance flags facts that changed after sending; the PDF is a real PDF whose text omits skills you lack |
 | `test_ai_engine.py` | An invented ref never becomes an action; junk output retries then asks; a dead model pauses rather than crashes; a hallucinated skill in a rewrite is rejected and the original kept |
+| `test_writer.py` | Retrieve → draft → critique → revise; an invented summary or bullet is thrown away and the composed wording kept |
+| `test_ats_format.py` | Published ATS parsing rules: single column, standard headings, nothing in a header or footer, no CSS generated content; the summary leads, roles run reverse-chronologically, the page budget holds |
+| `test_cover_letter.py` | Every paragraph is a sentence, never a database row; tense follows the dates; a missing requirement is named rather than hidden; nothing internal to the tool reaches the page |
+| `test_dashboard.py` | The zero-build dashboard's script parses and binds, in a real browser; the entry editor renders editable fields and never redraws under the cursor |
 | `test_ollama_live.py` | Opt-in: can a real small model return one JSON object naming a real ref, and does it invent skills when rewriting |
 
 ## Verified
 
-Run end to end on 2026-08-24 against Python 3.14.7, Postgres 16, Redis 7, Chromium 1234:
+Run end to end on 2026-08-25 against Python 3.14.7, Postgres 16, Redis 7, Chromium 1234:
 
 ```
-216 passed in 48.19s
+345 passed in 65.63s
 ```
 
 A live run driven through the HTTP API, approvals submitted with `source=phone`:
@@ -385,7 +398,7 @@ state, not a config echo. A 7-8B Q4 reasoner is the realistic ceiling on this ca
 be noticeably slower than the scripted reasoner.
 
 ```bash
-pytest              # 216 tests, no model needed
+pytest              # 345 tests, no model needed
 pytest -m ollama    # 5 live checks against a running Ollama
 ```
 

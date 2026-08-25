@@ -107,8 +107,22 @@ saw, what it proposed, what policy said, and what actually happened.
 
 ## Current phase
 
-**Walking skeleton.** The complete loop runs end to end against a local HTML fixture, driven
-by `StubReasoner` (scripted, deterministic). Real models and real job sites slot in behind
-interfaces that are proven working first. Deliberately absent: CV parsing, real job-board
-discovery, local inference, the phone app, WireGuard. Each has an interface stub so it drops
-in without refactoring.
+**The loop, the knowledge base, and document generation.** The complete loop runs end to end
+against a local HTML fixture, driven either by `StubReasoner` (scripted, deterministic) or by
+a local model through Ollama, with `ai/router.py` loading one large model at a time under an
+exclusive lock. A CV is parsed into individually-approved facts — proposed, never accepted on
+your behalf, and editable when the parser gets an entry wrong. Tailored CVs and cover letters
+are assembled from accepted facts and refuse to render if any line cites a fact you have not
+accepted.
+
+Deliberately absent: real job-board discovery, the phone app, WireGuard. Each has an
+interface stub so it drops in without refactoring.
+
+### The dead half of the state machine
+
+`applications.state` has fourteen states. Only the back half is reachable today: a Job row is
+created as a side effect of `POST /agent/runs`, which starts the application at
+`READY_FOR_BROWSER`. `DISCOVERED`, `PARSED`, `ANALYZED`, `SCORED`, `RECOMMENDED`,
+`USER_APPROVED` and `DOCUMENTS_GENERATING` are written by nothing, and
+`generated_documents.job_id` is never populated — so a generated CV is not yet attached to
+the job it was written for. Closing that gap is the next phase.
