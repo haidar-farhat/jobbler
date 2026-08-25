@@ -235,3 +235,101 @@ async def test_a_real_posting_is_read_and_a_wall_is_not(settings, browser_manage
             application_id=uuid4(),
         )
     assert browser_manager.session_count == 0
+
+
+# --------------------------------------------------------------------------------------
+# The bypasses an adversarial review found, with a working exfiltration behind each
+#
+# `check_url` classified a host as local only if it matched a name literally or parsed as a
+# dotted quad. A browser is far more permissive, and the two disagreed on exactly the hosts
+# that reach this machine. A hostile posting redirecting to `http://localhost.:8000/profile`
+# passed the pre-check, passed the post-redirect re-check, and wrote the entire accepted-fact
+# set into a job description.
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost./profile",          # the fully-qualified form of localhost
+        "http://foo.localhost./x",
+        "http://127.0.0.1.:8000/",
+        "http://2130706433/",                 # 127.0.0.1 as a decimal integer
+        "http://0x7f000001/",                 # ... as hex
+        "http://017700000001/",               # ... as octal
+        "http://127.1/",                      # ... in short form
+        "http://0/",                          # ... as zero
+        "http://2852039166/latest/meta-data/",  # 169.254.169.254, the metadata endpoint
+        "http://0xa9fea9fe/",
+        "http://224.0.0.1/",                  # multicast
+    ],
+)
+def test_every_form_that_reaches_this_machine_is_refused(url):
+    with pytest.raises(UnsafeURL):
+        check_url(url, allow_loopback=False)
+
+
+def test_a_public_address_in_an_unusual_form_is_still_allowed():
+    """The normaliser must not become a blanket refusal of numeric hosts."""
+    assert check_url("https://8.8.8.8/jobs", allow_loopback=False)
+    assert check_url("https://example.com./jobs", allow_loopback=False)
+
+
+def test_normalise_host_reports_what_a_browser_would_resolve():
+    from localapply.jobs.ingest import normalise_host
+
+    assert normalise_host("LOCALHOST.")[0] == "localhost"
+    assert str(normalise_host("2130706433")[1]) == "127.0.0.1"
+    assert str(normalise_host("127.1")[1]) == "127.0.0.1"
+    # A real domain has no address here; that is resolve_is_public's job.
+    assert normalise_host("example.com") == ("example.com", None)
+
+
+async def test_a_name_that_resolves_to_this_machine_is_refused():
+    """The syntactic check cannot see this -- `localtest.me` looks like any other domain."""
+    from localapply.jobs.ingest import resolve_is_public
+
+    # Resolved locally by the OS, so no network is needed for this to be true.
+    check_url("http://localhost.localtest.example/", allow_loopback=False)
+    with pytest.raises(UnsafeURL):
+        await resolve_is_public("http://localhost/", allow_loopback=False)
+
+
+async def test_resolution_is_skipped_when_loopback_is_allowed():
+    from localapply.jobs.ingest import resolve_is_public
+
+    await resolve_is_public("http://127.0.0.1:9000/", allow_loopback=True)
+
+
+async def test_the_kill_switch_pressed_during_pacing_stops_the_fetch(settings, browser_manager):
+    """Pacing sleeps for seconds. Pressing stop inside that window used to relaunch the
+    browser and report "that page did not load", which is not what happened."""
+    from uuid import uuid4
+
+    from localapply.db import models as m
+    from localapply.events.bus import EventBus
+    from localapply.jobs import ingest
+    from localapply.safety import KILL_SWITCH, AutomationHalted
+
+    settings.ingest_min_interval_s = 0.4
+    ingest._LAST_FETCH.clear()
+    ingest._LAST_FETCH["example.com"] = time.monotonic()
+
+    job = m.Job(url="https://example.com/jobs/1", title="AI Engineer")
+
+    async def press_stop():
+        await asyncio.sleep(0.05)
+        KILL_SWITCH.engage("test")
+
+    try:
+        stopper = asyncio.create_task(press_stop())
+        with pytest.raises(AutomationHalted):
+            await ingest.fetch_description(
+                browser=browser_manager, bus=EventBus(), settings=settings, job=job,
+                application_id=uuid4(),
+            )
+        await stopper
+        assert browser_manager.session_count == 0, "no browser may be launched after a stop"
+    finally:
+        KILL_SWITCH.reset()
+        ingest._LAST_FETCH.clear()
