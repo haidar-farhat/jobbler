@@ -107,22 +107,49 @@ saw, what it proposed, what policy said, and what actually happened.
 
 ## Current phase
 
-**The loop, the knowledge base, and document generation.** The complete loop runs end to end
-against a local HTML fixture, driven either by `StubReasoner` (scripted, deterministic) or by
-a local model through Ollama, with `ai/router.py` loading one large model at a time under an
-exclusive lock. A CV is parsed into individually-approved facts — proposed, never accepted on
-your behalf, and editable when the parser gets an entry wrong. Tailored CVs and cover letters
-are assembled from accepted facts and refuse to render if any line cites a fact you have not
-accepted.
+**The loop, the knowledge base, document generation, and the job pipeline.** The complete
+loop runs end to end against a local HTML fixture, driven either by `StubReasoner` (scripted,
+deterministic) or by a local model through Ollama, with `ai/router.py` loading one large
+model at a time under an exclusive lock. A CV is parsed into individually-approved facts —
+proposed, never accepted on your behalf, and editable when the parser gets an entry wrong.
+Tailored CVs and cover letters are assembled from accepted facts and refuse to render if any
+line cites a fact you have not accepted. A job is added, scored against your accepted skills,
+approved by you, given its own documents, and handed to the agent — with every step a
+recorded state change.
 
-Deliberately absent: real job-board discovery, the phone app, WireGuard. Each has an
+Deliberately absent: automatic job-board discovery, the phone app, WireGuard. Each has an
 interface stub so it drops in without refactoring.
 
-### The dead half of the state machine
+### The job pipeline
 
-`applications.state` has fourteen states. Only the back half is reachable today: a Job row is
-created as a side effect of `POST /agent/runs`, which starts the application at
-`READY_FOR_BROWSER`. `DISCOVERED`, `PARSED`, `ANALYZED`, `SCORED`, `RECOMMENDED`,
-`USER_APPROVED` and `DOCUMENTS_GENERATING` are written by nothing, and
-`generated_documents.job_id` is never populated — so a generated CV is not yet attached to
-the job it was written for. Closing that gap is the next phase.
+A posting enters at `DISCOVERED`, and every step to `READY_FOR_BROWSER` is an explicit HTTP
+request that writes one state:
+
+```
+POST /jobs                    → DISCOVERED (row default; creating a row is not a transition)
+POST /jobs/{id}/ingest        → PARSED       paste the text, or read the URL you typed
+POST /jobs/{id}/analyze       → ANALYZED → SCORED → RECOMMENDED
+POST /jobs/{id}/approve       → USER_APPROVED    the human gate; needs confirm: true
+POST /jobs/{id}/documents     → DOCUMENTS_GENERATING → READY_FOR_BROWSER
+POST /jobs/{id}/apply         → hands over; the run loop owns the browser half
+POST /jobs/{id}/unblock       → back to the stored resume_state, chosen by the server
+POST /jobs/{id}/cancel        → CANCELLED
+```
+
+`applications.state` is written by **exactly two wrappers**, and a test greps for a third:
+`jobs.pipeline.advance` before the browser, `RunManager._transition` after it. Each calls
+`state_machine.transition()` first, and `advance()` has no tolerant flag — a pipeline step
+asking for an illegal move is a 409, never a silent no-op. Every move also writes an
+`audit_logs` row, which is what makes `GET /jobs/{id}` able to show a real history.
+
+**Nothing in the pipeline is a model call.** Requirement extraction is a regular expression
+over a fixed 84-name vocabulary and the score is arithmetic, so a posting cannot argue its
+way to a higher score — and no automated path acts on the number anyway. Advancing past
+`RECOMMENDED` takes a request from the user carrying an explicit confirmation.
+
+Reading a posting from its URL is the one place the pipeline touches the network, and it is
+never implicit. One navigation, of the URL the *user typed* — a URL found in page content is
+never followed. No header, cookie, or user-agent tampering. Private and loopback addresses
+are refused, before navigation and again after any redirect. A login wall or a CAPTCHA
+stores nothing and parks the job for a person, because getting past one is their decision to
+make in their own browser.

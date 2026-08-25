@@ -72,8 +72,14 @@
        color:var(--muted);font-size:.85rem}
   .tab.on{border-bottom-color:var(--accent);color:var(--ink)}
   .tab:hover{background:transparent;color:var(--ink)}
-  #profile-view{display:none;grid-template-columns:1fr 1fr;gap:1rem;padding:1rem;
+  #profile-view,#jobs-view{display:none;grid-template-columns:1fr 1fr;gap:1rem;padding:1rem;
                 align-content:start}
+  .state{font-size:.65rem;padding:.1rem .4rem;border-radius:3px;background:var(--edge);
+         color:var(--muted);white-space:nowrap}
+  .state.ready_for_browser,.state.user_approved{background:rgba(63,185,80,.15);color:var(--ok)}
+  .state.blocked,.state.user_intervention{background:rgba(210,153,34,.15);color:var(--warn)}
+  .state.failed,.state.cancelled{background:rgba(248,81,73,.15);color:var(--danger)}
+  .state.submitted{background:rgba(88,166,255,.15);color:var(--accent)}
   table{width:100%;border-collapse:collapse;font-size:.85rem}
   td,th{text-align:left;padding:.35rem .5rem;border-bottom:1px solid rgba(38,45,54,.5)}
   th{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
@@ -95,6 +101,7 @@
   <span id="t-mode"></span>
   <nav style="display:flex;gap:.2rem;margin-left:1rem">
     <button class="tab on" data-view="mission">Mission Control</button>
+    <button class="tab" data-view="jobs">Jobs</button>
     <button class="tab" data-view="profile">Profile &amp; CV</button>
   </nav>
   <span style="margin-left:auto;display:flex;gap:.6rem;align-items:center">
@@ -244,6 +251,48 @@
            line-height:1.55;color:var(--muted)"></div>
       <div id="generated" style="margin-top:1rem"></div>
     </div>
+  </section>
+</div>
+
+<div id="jobs-view">
+  <section class="span2">
+    <h2>Add a job</h2>
+    <div class="body">
+      <div class="row">
+        <label style="flex:2">Posting URL
+          <input id="job-url" placeholder="https://boards.greenhouse.io/…">
+        </label>
+        <label style="flex:1;min-width:10rem">Job title
+          <input id="job-title" placeholder="AI Engineer">
+        </label>
+        <label style="flex:1;min-width:10rem">Company
+          <input id="job-company" placeholder="Northwind">
+        </label>
+      </div>
+      <label style="display:block;margin-top:.7rem;font-size:.72rem;color:var(--muted)">
+        Paste the posting — this is what gets scored against your accepted skills
+        <textarea id="job-desc" rows="6" style="width:100%;padding:.5rem;margin-top:.3rem;
+          border:1px solid var(--edge);border-radius:5px;background:var(--surface);
+          color:var(--ink);font:inherit;font-size:.85rem"></textarea>
+      </label>
+      <div style="display:flex;gap:.6rem;margin-top:.8rem;align-items:center;flex-wrap:wrap">
+        <button class="primary" id="b-add-job">Add &amp; score</button>
+        <label class="muted" style="display:flex;align-items:center;gap:.35rem;
+               font-size:.78rem;cursor:pointer" title="Opens the URL you typed in a browser
+               once, reads the text, and closes it. If the page wants a login or shows a
+               CAPTCHA the job is parked for you rather than worked around.">
+          <input type="checkbox" id="job-fetch" style="width:auto;margin:0">
+          Read the page for me instead of pasting
+        </label>
+        <span class="muted" id="jobs-status" style="font-size:.8rem"></span>
+      </div>
+      <p id="jobs-err" style="color:var(--danger);display:none;font-size:.85rem"></p>
+    </div>
+  </section>
+
+  <section class="span2">
+    <h2>Board</h2>
+    <div class="body" id="jobs-table"><p class="muted">Loading…</p></div>
   </section>
 </div>
 
@@ -439,16 +488,189 @@ $("b-rearm").onclick = async () => {
 };
 
 // --------------------------------------------------------------------------------------
+// Jobs board
+//
+// Everything a job carries -- its title, company and description -- was written by whoever
+// posted it. Every one of those strings goes through esc() before it reaches the page.
+// --------------------------------------------------------------------------------------
+
+const jobsErr = msg => {
+  const e = $("jobs-err");
+  e.textContent = msg || "";
+  e.style.display = msg ? "block" : "none";
+};
+
+//: What you can do next, given where a job is. Keyed by state so the board never offers a
+//: button the API would answer with a 409.
+const JOB_ACTIONS = {
+  discovered: [["ingest", "Add description"]],
+  parsed: [["analyze", "Score it"]],
+  analyzed: [["analyze", "Score it"]],
+  scored: [["analyze", "Score it"]],
+  recommended: [["approve", "Approve"], ["cancel", "Not interested"]],
+  user_approved: [["documents", "Write my CV"], ["cancel", "Not interested"]],
+  ready_for_browser: [["apply", "Apply with the agent"], ["cancel", "Not interested"]],
+  blocked: [["unblock", "I've handled it"], ["cancel", "Not interested"]],
+  user_intervention: [["cancel", "Not interested"]],
+  failed: [["cancel", "Not interested"]],
+};
+
+function jobRow(j) {
+  const score = j.match_score === null || j.match_score === undefined
+    ? '<span class="muted">—</span>'
+    : Math.round(j.match_score * 100) + "%";
+  const gap = (j.missing_required || []).length
+    ? '<div class="muted" style="font-size:.7rem">missing ' + esc(j.missing_required.join(", "))
+      + "</div>"
+    : "";
+  const actions = (JOB_ACTIONS[j.state] || [])
+    .map(a => '<button data-job="' + j.job_id + '" data-act="' + a[0] + '">'
+      + esc(a[1]) + "</button>")
+    .join(" ");
+
+  return "<tr><td><b>" + esc(j.title) + "</b>"
+    + (j.company ? '<div class="muted" style="font-size:.75rem">' + esc(j.company) + "</div>" : "")
+    + "</td>"
+    + '<td><span class="state ' + esc(j.state) + '">' + esc(j.state.replace(/_/g, " "))
+    + "</span>"
+    + (j.recommendation ? ' <span class="muted" style="font-size:.7rem">'
+        + esc(j.recommendation) + "</span>" : "")
+    + "</td>"
+    + '<td class="conf">' + score + gap + "</td>"
+    + '<td class="muted" style="font-size:.75rem">' + (j.documents || 0) + "</td>"
+    + '<td style="white-space:nowrap">' + actions + "</td></tr>";
+}
+
+async function loadJobs() {
+  let data;
+  try { data = await api("/jobs"); } catch (e) { jobsErr(String(e.message || e)); return; }
+  jobsErr("");
+
+  $("jobs-table").innerHTML = data.total
+    ? "<table><thead><tr><th>Role</th><th>State</th><th>Match</th><th>Docs</th>"
+      + "<th></th></tr></thead><tbody>"
+      + data.jobs.map(jobRow).join("")
+      + "</tbody></table>"
+    : '<p class="muted">No jobs yet. Add one above.</p>';
+}
+
+$("b-add-job").onclick = async () => {
+  const url = $("job-url").value.trim();
+  if (!url) { jobsErr("A posting needs a URL."); return; }
+
+  const fetchIt = $("job-fetch").checked;
+  const description = $("job-desc").value.trim();
+  $("b-add-job").disabled = true;
+  $("jobs-status").textContent = "Working…";
+  jobsErr("");
+
+  try {
+    const job = await api("/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        url: url,
+        title: $("job-title").value.trim() || "Untitled role",
+        company: $("job-company").value.trim() || null,
+        description: fetchIt ? "" : description,
+      }),
+    });
+
+    if (fetchIt) {
+      $("jobs-status").textContent = "Reading the page…";
+      const read = await api("/jobs/" + job.job_id + "/ingest",
+        { method: "POST", body: JSON.stringify({ mode: "fetch" }) });
+      if (read.blocked) {
+        jobsErr(read.next);
+        $("jobs-status").textContent = "";
+        await loadJobs();
+        return;
+      }
+    }
+
+    $("jobs-status").textContent = "Scoring…";
+    await api("/jobs/" + job.job_id + "/analyze", { method: "POST", body: "{}" });
+
+    $("job-url").value = ""; $("job-desc").value = "";
+    $("job-title").value = ""; $("job-company").value = "";
+    $("jobs-status").textContent = "Added.";
+    await loadJobs();
+  } catch (e) {
+    jobsErr(String(e.message || e));
+    $("jobs-status").textContent = "";
+    await loadJobs();
+  } finally {
+    $("b-add-job").disabled = false;
+  }
+};
+
+$("jobs-table").addEventListener("click", async ev => {
+  const id = ev.target.dataset.job;
+  const act = ev.target.dataset.act;
+  if (!id || !act) return;
+
+  ev.target.disabled = true;
+  jobsErr("");
+  try {
+    if (act === "ingest") {
+      const text = window.prompt("Paste the job description");
+      if (!text) return;
+      await api("/jobs/" + id + "/ingest",
+        { method: "POST", body: JSON.stringify({ mode: "paste", description: text }) });
+      await api("/jobs/" + id + "/analyze", { method: "POST", body: "{}" });
+    } else if (act === "analyze") {
+      await api("/jobs/" + id + "/analyze", { method: "POST", body: "{}" });
+    } else if (act === "approve") {
+      await api("/jobs/" + id + "/approve",
+        { method: "POST", body: JSON.stringify({ confirm: true }) });
+    } else if (act === "documents") {
+      $("jobs-status").textContent = "Writing your CV…";
+      const made = await api("/jobs/" + id + "/documents",
+        { method: "POST", body: JSON.stringify({ kinds: ["tailored_cv"] }) });
+      $("jobs-status").textContent = "";
+      if (made.error) jobsErr(made.error);
+    } else if (act === "apply") {
+      const started = await api("/jobs/" + id + "/apply", { method: "POST", body: "{}" });
+      runId = started.run_id;
+      attachStream(runId);
+      // Hand over to Mission Control: from here it is a live run, not a board row.
+      document.querySelector('.tab[data-view="mission"]').click();
+      return;
+    } else if (act === "unblock") {
+      await api("/jobs/" + id + "/unblock", { method: "POST", body: "{}" });
+    } else if (act === "cancel") {
+      await api("/jobs/" + id + "/cancel", { method: "POST", body: "{}" });
+    }
+    await loadJobs();
+  } catch (e) {
+    jobsErr(String(e.message || e));
+    $("jobs-status").textContent = "";
+    await loadJobs();
+  } finally {
+    ev.target.disabled = false;
+  }
+});
+
+// --------------------------------------------------------------------------------------
 // Profile & CV
 // --------------------------------------------------------------------------------------
 
+// A registry rather than a boolean. The switcher was `view === "profile"`, which has
+// exactly two outcomes -- adding a third tab to it would have shown two views at once.
+const VIEWS = {
+  mission: { el: () => document.querySelector("main"), display: "grid" },
+  jobs:    { el: () => $("jobs-view"), display: "grid", onShow: () => loadJobs() },
+  profile: { el: () => $("profile-view"), display: "grid",
+             onShow: () => { loadProfile(); loadGenerated(); } },
+};
+
 document.querySelectorAll(".tab").forEach(tab => {
   tab.onclick = () => {
+    const wanted = tab.dataset.view;
     document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t === tab));
-    const profileView = tab.dataset.view === "profile";
-    document.querySelector("main").style.display = profileView ? "none" : "grid";
-    $("profile-view").style.display = profileView ? "grid" : "none";
-    if (profileView) { loadProfile(); loadGenerated(); }
+    Object.keys(VIEWS).forEach(name => {
+      VIEWS[name].el().style.display = name === wanted ? VIEWS[name].display : "none";
+    });
+    if (VIEWS[wanted] && VIEWS[wanted].onShow) VIEWS[wanted].onShow();
   };
 });
 

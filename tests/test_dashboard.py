@@ -10,6 +10,7 @@ A syntax error in one file should not be something the user discovers.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -159,3 +160,100 @@ def test_the_page_has_no_stray_control_characters():
     text = DASHBOARD.read_text(encoding="utf-8")
     stray = {hex(ord(c)) for c in text if ord(c) < 32 and c not in "\n\t"}
     assert stray == set(), f"control characters in dashboard.html: {stray}"
+
+
+# --------------------------------------------------------------------------------------
+# The Jobs tab
+# --------------------------------------------------------------------------------------
+
+SAMPLE_JOBS = """{
+  "total": 2, "limit": 50, "offset": 0, "counts": {"recommended": 1},
+  "jobs": [
+    {"job_id": "aaaaaaaa-0000-0000-0000-000000000001", "title": "AI Engineer",
+     "company": "Northwind", "state": "recommended", "match_score": 0.83,
+     "recommendation": "apply", "missing_required": ["Kubernetes"], "documents": 0},
+    {"job_id": "aaaaaaaa-0000-0000-0000-000000000002",
+     "title": "<img src=x onerror=alert(1)>", "company": null, "state": "discovered",
+     "match_score": null, "recommendation": null, "missing_required": [], "documents": 0}
+  ]
+}"""
+
+
+async def test_there_are_three_tabs_and_only_one_view_shows(page):
+    view, errors = page
+    tabs = await view.eval_on_selector_all(".tab", "els => els.map(e => e.dataset.view)")
+    assert tabs == ["mission", "jobs", "profile"]
+
+    await view.click('.tab[data-view="jobs"]')
+    await view.wait_for_timeout(200)
+    shown = await view.evaluate(
+        "() => [document.querySelector('main'), document.getElementById('jobs-view'),"
+        " document.getElementById('profile-view')]"
+        ".map(e => getComputedStyle(e).display)"
+    )
+    assert shown == ["none", "grid", "none"]
+    assert _real_errors(errors) == []
+
+
+async def test_the_jobs_view_is_hidden_in_the_stylesheet_not_only_in_js(page):
+    """CSS-first, or the view flashes on screen before the switcher runs."""
+    view, _ = page
+    assert await view.evaluate(
+        "getComputedStyle(document.getElementById('jobs-view')).display"
+    ) == "none"
+
+
+RENDER_BOARD = (
+    "data => { document.getElementById('jobs-table').innerHTML ="
+    " '<table><tbody>' + data.jobs.map(jobRow).join('') + '</tbody></table>'; }"
+)
+
+
+async def test_the_board_renders_a_row_per_job_with_its_score(page):
+    view, errors = page
+    await view.evaluate(RENDER_BOARD, json.loads(SAMPLE_JOBS))
+
+    rows = await view.query_selector_all("#jobs-table tbody tr")
+    assert len(rows) == 2
+
+    body = await view.eval_on_selector("#jobs-table", "el => el.textContent")
+    assert "83%" in body
+    # A low score is explained rather than left as a bare number.
+    assert "missing Kubernetes" in body
+    assert _real_errors(errors) == []
+
+
+async def test_a_title_written_by_a_stranger_is_escaped(page):
+    """Every string on the board came from a job posting."""
+    view, errors = page
+    await view.evaluate(RENDER_BOARD, json.loads(SAMPLE_JOBS))
+
+    assert await view.query_selector("#jobs-table img") is None
+    body = await view.eval_on_selector("#jobs-table", "el => el.textContent")
+    assert "<img src=x onerror=alert(1)>" in body, "escaped, not stripped"
+    assert _real_errors(errors) == []
+
+
+async def test_the_board_only_offers_actions_the_api_would_accept(page):
+    """A button the API answers with a 409 is worse than no button."""
+    view, _ = page
+    offered = await view.evaluate(
+        "() => Object.fromEntries(Object.entries(JOB_ACTIONS)"
+        ".map(([k, v]) => [k, v.map(a => a[0])]))"
+    )
+    assert offered["recommended"] == ["approve", "cancel"]
+    assert offered["user_approved"] == ["documents", "cancel"]
+    assert offered["ready_for_browser"] == ["apply", "cancel"]
+    # Terminal states offer nothing at all.
+    assert "submitted" not in offered
+    assert "cancelled" not in offered
+
+
+async def test_the_add_job_form_is_wired(page):
+    view, errors = page
+    for selector in ("#job-url", "#job-desc", "#b-add-job", "#job-fetch", "#jobs-table"):
+        assert await view.query_selector(selector) is not None, f"{selector} missing"
+    assert await view.evaluate(
+        "typeof document.getElementById('b-add-job').onclick"
+    ) == "function"
+    assert _real_errors(errors) == []

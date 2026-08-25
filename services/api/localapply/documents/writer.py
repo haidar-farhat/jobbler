@@ -33,6 +33,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from ..ai.prompting import UNTRUSTED_CLAUSE, wrap_untrusted
 from ..profile.facts import FactCategory
 from .claims import check_claims
 from .generator import DocumentItem, DocumentPlan, DocumentSection
@@ -63,7 +64,7 @@ You are given the candidate's verified facts. Rules, in order of importance:
   * Do not open with "I am" or "A highly". Do not write the candidate's name.
 
 Reply with the summary text only. No heading, no quotes, no preamble.
-"""
+""" + "\n" + UNTRUSTED_CLAUSE
 
 BULLET_SYSTEM = """\
 You rewrite one CV bullet point so it reads well.
@@ -86,7 +87,7 @@ Rules, in order of importance:
   * One sentence. Under 28 words. No trailing "which allowed the team to..." padding.
 
 Reply with the rewritten bullet only.
-"""
+""" + "\n" + UNTRUSTED_CLAUSE
 
 CRITIQUE_SYSTEM = """\
 You review a draft CV section against the job posting and the candidate's source facts.
@@ -95,7 +96,7 @@ Say briefly what is weak: vague wording, buried relevance, anything that reads a
 If a line states something the source facts do not support, say so first and quote it.
 
 Be specific and short: at most four bullet points. If it is genuinely good, say "good".
-"""
+""" + "\n" + UNTRUSTED_CLAUSE
 
 LETTER_SYSTEM = """\
 You rewrite one paragraph of a cover letter so it reads like a person wrote it.
@@ -112,7 +113,7 @@ Rules, in order of importance:
   * Keep the tense you were given: a role written in the present is one still held.
 
 Reply with the rewritten paragraph only. No greeting, no sign-off, no quotes.
-"""
+""" + "\n" + UNTRUSTED_CLAUSE
 
 LETTER_CRITIQUE_SYSTEM = """\
 You review a draft cover letter against the job posting and the candidate's source facts.
@@ -121,7 +122,7 @@ Say briefly what is weak: filler, repetition between paragraphs, claims the fact
 support, or a paragraph that says nothing specific. Quote anything unsupported first.
 
 At most four short bullet points. If it is genuinely good, say "good".
-"""
+""" + "\n" + UNTRUSTED_CLAUSE
 
 
 @dataclass
@@ -241,7 +242,11 @@ class AgenticWriter:
         ).strip()
 
         prompt = (
-            (f"The candidate is applying for: {job_title}\n\n" if job_title else "")
+            (
+                f"The candidate is applying for:\n{wrap_untrusted(job_title)}\n\n"
+                if job_title
+                else ""
+            )
             + f"Verified facts:\n{source}\n\n"
             + f"Write the CV summary in at most {SUMMARY_MAX_WORDS} words."
         )
@@ -296,7 +301,7 @@ class AgenticWriter:
             rendered += [f"  {item.text}" for item in section.items]
 
         prompt = (
-            f"JOB POSTING:\n{description[:1500]}\n\n"
+            f"JOB POSTING:\n{wrap_untrusted(description, limit=1500)}\n\n"
             f"SOURCE FACTS:\n" + "\n".join(f"  - {s}" for s in source_facts[:20]) + "\n\n"
             "DRAFT:\n" + "\n".join(rendered[:60])
         )
@@ -460,9 +465,13 @@ async def write_cover_letter(
 
     supporting = [f.value for f in facts]
     context = (
-        f"This is a cover letter for a {job_title} role"
-        + (f" at {company}." if company else ".")
-        + (f"\n\nWhat the posting asks for:\n{description[:900]}" if description else "")
+        "This is a cover letter for this role:\n"
+        + wrap_untrusted(job_title + (f" at {company}" if company else ""))
+        + (
+            f"\n\nWhat the posting asks for:\n{wrap_untrusted(description, limit=900)}"
+            if description
+            else ""
+        )
     )
 
     rewritten_items: list[DocumentItem] = []
@@ -485,7 +494,7 @@ async def write_cover_letter(
     draft = "\n\n".join(item.text for item in body.items)
     report.critique = (
         await writer._generate(
-            f"JOB POSTING:\n{description[:1200]}\n\n"
+            f"JOB POSTING:\n{wrap_untrusted(description, limit=1200)}\n\n"
             "SOURCE FACTS:\n" + "\n".join(f"  - {s}" for s in supporting[:20]) + "\n\n"
             f"DRAFT LETTER:\n{draft[:2500]}",
             LETTER_CRITIQUE_SYSTEM,

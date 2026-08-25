@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 
 from ..ai.interface import ProviderUnavailable
+from ..ai.prompting import UNTRUSTED_CLAUSE, wrap_untrusted
 from .claims import UnsupportedClaim, assert_supported
 from .generator import DocumentPlan
 
@@ -34,14 +35,17 @@ Absolute rules:
   * Reply with the rewritten line and nothing else -- no preamble, no quotes, no explanation.
 
 You are improving phrasing, not writing a CV. Adding anything is a failure.
-"""
+""" + "\n" + UNTRUSTED_CLAUSE
 
 
 def _prompt(text: str, job_title: str | None, company: str | None) -> str:
     context = ""
     if job_title:
-        context = f"\nThis is for an application for {job_title}"
-        context += f" at {company}." if company else "."
+        # The job title and company come from a posting, so they are third-party text even
+        # though they are short. A short string next to instructions is the easiest place to
+        # hide one.
+        where = job_title + (f" at {company}" if company else "")
+        context = "\nThis is for an application for:\n" + wrap_untrusted(where)
     return (
         f"Source line:\n{text}\n{context}\n\n"
         "Rewrite it in one or two sentences, adding nothing."

@@ -335,6 +335,12 @@ async def ingest(
                 f"{job_id}/unblock and paste the text with mode=paste."
             ),
         }
+    except AutomationHalted as exc:
+        # Caught before RuntimeError, which it subclasses. The pre-check above closes the
+        # common case, but the switch can be engaged between it and the executor's own
+        # check -- and the answer to "automation is stopped" is 409 everywhere else in this
+        # API, not the 503 that means "the browser could not be used".
+        raise HTTPException(409, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
 

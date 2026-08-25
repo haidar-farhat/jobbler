@@ -567,3 +567,53 @@ def test_resuming_never_lands_on_the_review_gate():
     assert not can_transition(S.USER_INTERVENTION, S.REVIEW_REQUIRED)
     # The edge the run loop actually uses must survive the change.
     assert can_transition(S.USER_INTERVENTION, S.FORM_ANALYZED)
+
+
+# --------------------------------------------------------------------------------------
+# The kill switch, through the pipeline
+# --------------------------------------------------------------------------------------
+
+
+async def test_the_kill_switch_answers_fetch_and_apply_the_same_way(client, seeded):
+    """409 everywhere, never a 503. `AutomationHalted` subclasses `RuntimeError`, so an
+    `except RuntimeError` placed first would answer "the browser is unavailable" to a
+    question that is really "you stopped automation"."""
+    from localapply.safety import KILL_SWITCH
+
+    fresh = await add(client)                    # discovered, so /ingest is in scope
+    ready = await walk_to_recommended(client)    # further along, so /apply is in scope
+
+    KILL_SWITCH.engage("test")
+    try:
+        fetched = await client.post(f"/jobs/{fresh['job_id']}/ingest", json={"mode": "fetch"})
+        assert fetched.status_code == 409
+        assert "stopped" in fetched.json()["detail"].lower()
+
+        applied = await client.post(f"/jobs/{ready['job_id']}/apply", json={})
+        assert applied.status_code == 409
+        assert "stopped" in applied.json()["detail"].lower()
+    finally:
+        KILL_SWITCH.reset()
+
+
+async def test_a_fetch_is_refused_before_the_state_moves(client, seeded):
+    """A refused fetch must leave the job exactly where it was, with no description."""
+    from localapply.safety import KILL_SWITCH
+
+    job = await add(client)
+    KILL_SWITCH.engage("test")
+    try:
+        await client.post(f"/jobs/{job['job_id']}/ingest", json={"mode": "fetch"})
+    finally:
+        KILL_SWITCH.reset()
+
+    assert (await application_row(job["application_id"])).state == S.DISCOVERED.value
+    detail = (await client.get(f"/jobs/{job['job_id']}")).json()
+    assert detail["description"] is None
+
+
+async def test_an_unknown_ingest_mode_is_refused(client, seeded):
+    job = await add(client)
+    response = await client.post(f"/jobs/{job['job_id']}/ingest", json={"mode": "scrape"})
+    assert response.status_code == 400
+    assert "paste" in response.json()["detail"]

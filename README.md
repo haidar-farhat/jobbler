@@ -15,12 +15,14 @@ Python, no model — decides. The executor performs mechanical Playwright operat
 interprets nothing. Every step is appended to a log that drives both the live dashboard and
 offline replay.
 
-**Status: the loop, your CV, and your documents.** The whole agent loop runs end to end
-against a local HTML fixture, driven either by a deterministic scripted reasoner or by a
-local model through Ollama. Your CV is parsed into individually-approved facts you can
-correct by hand, and tailored CVs and cover letters are generated from them — grounded, so
-every line traces to a fact you accepted. Real job sites are still out of scope on purpose;
-see [Not built yet](#not-built-yet).
+**Status: the loop, your CV, your documents, and the job pipeline.** The whole agent loop
+runs end to end against a local HTML fixture, driven either by a deterministic scripted
+reasoner or by a local model through Ollama. Your CV is parsed into individually-approved
+facts you can correct by hand, and tailored CVs and cover letters are generated from them —
+grounded, so every line traces to a fact you accepted. A job posting goes on a board, gets
+scored against your accepted skills, waits for you to approve it, gets its own documents, and
+is then handed to the agent. Automatic discovery is still out of scope on purpose; see
+[Not built yet](#not-built-yet).
 
 - [Architecture](docs/architecture.md)
 - [Agent protocol](docs/agent-protocol.md)
@@ -47,7 +49,31 @@ These are enforced structurally and covered by tests, not asserted in a prompt:
 - **Page content cannot weaken policy.** The policy engine contains no model, so a prompt
   injection can at most produce a bad proposal, which policy then rejects.
 - **`DRY_RUN=true` by default.** Submits are logged and simulated but never actually clicked.
-- **The kill switch is checked before every action**, by both the run loop and the executor.
+- **The kill switch is checked before every action**, by both the run loop and the executor,
+  and before a job posting is fetched.
+- **A job posting cannot advance itself.** Requirement extraction is a regular expression
+  over a fixed vocabulary and the score is arithmetic — no model is involved anywhere in the
+  pipeline, and no automated path reads the score. Getting past `RECOMMENDED` takes a request
+  from you carrying an explicit confirmation. Only vocabulary words and booleans are ever
+  written to the database from a posting; an assertion runs before the commit.
+- **A run always terminates.** The action budget bounds executed actions, and asking for help
+  about a page that has not changed twice in a row ends the run with a reason instead of
+  looping.
+
+## The pipeline
+
+```
+add a job → score it → you approve → write its CV → hand it to the agent
+```
+
+Each arrow is one state change, validated by the state machine and recorded in the audit log.
+`GET /jobs/{id}` shows the whole walk. A job can be cancelled at any point, and one that got
+stuck comes back with `POST /jobs/{id}/unblock` — the server chooses where it resumes to, so
+"unblock" can never skip the approval step.
+
+Reading a posting from its URL is optional and explicit. It opens the URL *you typed*, once,
+in a plain browser with no stored session — and if the page wants a login or shows a CAPTCHA
+it stores nothing and parks the job for you. See [On real job sites](#on-real-job-sites).
 
 ## Requirements
 
@@ -244,7 +270,9 @@ What is covered:
 | `test_writer.py` | Retrieve → draft → critique → revise; an invented summary or bullet is thrown away and the composed wording kept |
 | `test_ats_format.py` | Published ATS parsing rules: single column, standard headings, nothing in a header or footer, no CSS generated content; the summary leads, roles run reverse-chronologically, the page budget holds |
 | `test_cover_letter.py` | Every paragraph is a sentence, never a database row; tense follows the dates; a missing requirement is named rather than hidden; nothing internal to the tool reaches the page |
-| `test_dashboard.py` | The zero-build dashboard's script parses and binds, in a real browser; the entry editor renders editable fields and never redraws under the cursor |
+| `test_dashboard.py` | The zero-build dashboard's script parses and binds, in a real browser; the entry editor never redraws under the cursor; a job title written by a stranger is escaped, not rendered |
+| `test_job_pipeline.py` | A posting cannot advance itself, raise its own approval, or put anything but a vocabulary word in the database; every skip is a 409; the state column has exactly two writers |
+| `test_ingest_boundary.py` | Private and loopback addresses are refused before a browser opens; a login wall stores nothing; the same host is paced between fetches |
 | `test_ollama_live.py` | Opt-in: can a real small model return one JSON object naming a real ref, and does it invent skills when rewriting |
 
 ## Verified
@@ -252,7 +280,7 @@ What is covered:
 Run end to end on 2026-08-25 against Python 3.14.7, Postgres 16, Redis 7, Chromium 1234:
 
 ```
-345 passed in 65.63s
+435 passed in 140.14s
 ```
 
 A live run driven through the HTTP API, approvals submitted with `source=phone`:
@@ -398,7 +426,7 @@ state, not a config echo. A 7-8B Q4 reasoner is the realistic ceiling on this ca
 be noticeably slower than the scripted reasoner.
 
 ```bash
-pytest              # 345 tests, no model needed
+pytest              # 435 tests, no model needed
 pytest -m ollama    # 5 live checks against a running Ollama
 ```
 
@@ -408,13 +436,38 @@ object naming a real ref.
 
 ## Not built yet
 
-Real job-board discovery (Phase 6) · React Native app (Phase 9) · WireGuard remote access
-(Phase 10). Each has an interface stub so it drops in without a refactor.
+Automatic job-board discovery (Phase 6) · React Native app (Phase 9) · WireGuard remote
+access (Phase 10). Each has an interface stub so it drops in without a refactor.
+
+Phase 5 ingests **one posting at a time, chosen by you**. Bulk ingest, the Greenhouse / Lever
+/ Ashby JSON APIs, polling and dedupe on `(source, external_id)` all belong to Phase 6 —
+`jobs.external_id` is written today but nothing reads it yet. Two things are deliberately
+*not* coming with them: any automated advance past `RECOMMENDED` (no auto-approve, no score
+threshold — a posting raises its own score just by listing skills you have, and the design is
+safe only because nothing acts on the number), and re-scoring a job in place (a score is
+evidence of what was known when you approved it).
 
 ### On real job sites
 
-The skeleton runs against a local fixture on purpose. Automating LinkedIn violates its User
-Agreement and risks the account; when discovery is built it should target boards with public
-APIs or permissive terms (Greenhouse, Lever, Ashby), with LinkedIn treated as manual-assist —
-you drive the search, the agent observes and scores. The design already refuses to defeat
-anti-bot controls: CAPTCHAs and login walls pause the run and hand it to you.
+The agent still runs against a local fixture on purpose. Automating LinkedIn violates its
+User Agreement and risks the account; when discovery is built it should target boards with
+public APIs or permissive terms (Greenhouse, Lever, Ashby), with LinkedIn treated as
+manual-assist — you drive the search, the agent observes and scores.
+
+Reading a posting is the one thing that does reach a real site, and its posture is **refuse,
+do not evade** — built rather than asserted, and tested as such:
+
+- One URL per fetch, and it is the one **you typed**. A URL found in page content is never
+  followed, which removes attacker-directed fetching as a class rather than as a case.
+- One navigation. No retry, no second session, no second attempt with different headers.
+- No user-agent, header, or cookie tampering; a plain browser with no stored session, so
+  there is no logged-in account to get banned.
+- A login wall or a CAPTCHA stores **nothing**, parks the job, and hands you the URL.
+- Per-host pacing, with the wait held inside the lock so fetches queue rather than race.
+- Private, loopback, link-local and reserved addresses are refused — before navigating, and
+  again on whatever URL the browser actually landed on.
+
+Two limits, written down rather than assumed: the address check reads the URL, not the
+address the host resolves to at connect time, so DNS rebinding is not covered; and there is
+no `robots.txt` parser in this tree — the mitigations above stand in its place rather than
+pretending to honour a file nothing reads.
