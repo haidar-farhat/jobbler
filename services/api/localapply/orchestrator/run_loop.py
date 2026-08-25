@@ -795,6 +795,12 @@ class RunManager:
 
     async def _finish(self, handle: RunHandle, status: str, reason: str) -> None:
         handle.status = status
+        # `snapshot()` is what the dashboard polls, and it reads `handle.error`. Writing the
+        # reason only to the run row left a failed run showing "failed" with nothing beside
+        # it -- true of an exhausted action budget as well as a run stopped for asking the
+        # same question twice.
+        if status in {"failed", "stopped"} and not handle.error:
+            handle.error = reason
         await self._close_session(handle)
         await self._update_run(
             handle.run_id,

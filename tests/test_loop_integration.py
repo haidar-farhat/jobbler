@@ -383,8 +383,9 @@ async def test_the_warning_about_hand_filled_fields_is_persisted(run_manager, st
 
 
 def observation_with(url: str, names: list[str]):
-    from localapply.contracts import ElementRole, Observation, ObservedElement
     from uuid import uuid4
+
+    from localapply.contracts import ElementRole, Observation, ObservedElement
 
     return Observation(
         run_id=uuid4(),
@@ -413,8 +414,9 @@ def test_the_page_key_ignores_refs_but_notices_the_page_changing():
 
 def test_repeated_help_about_an_unchanged_page_stops_the_run(run_manager):
     """The regression, as a pure unit check on the guard."""
-    from localapply.orchestrator.run_loop import MAX_HELP_AT_ONE_PAGE, RunHandle
     from uuid import uuid4
+
+    from localapply.orchestrator.run_loop import MAX_HELP_AT_ONE_PAGE, RunHandle
 
     handle = RunHandle(run_id=uuid4(), application_id=None, goal="apply", start_url="https://x")
     page = observation_with("https://x/apply", ["Email"])
@@ -429,8 +431,9 @@ def test_repeated_help_about_an_unchanged_page_stops_the_run(run_manager):
 
 def test_help_after_the_page_actually_changes_is_not_a_loop(run_manager):
     """Resolving a CAPTCHA changes the page. The agent must be free to ask again."""
-    from localapply.orchestrator.run_loop import MAX_HELP_AT_ONE_PAGE, RunHandle
     from uuid import uuid4
+
+    from localapply.orchestrator.run_loop import MAX_HELP_AT_ONE_PAGE, RunHandle
 
     handle = RunHandle(run_id=uuid4(), application_id=None, goal="apply", start_url="https://x")
 
@@ -441,8 +444,9 @@ def test_help_after_the_page_actually_changes_is_not_a_loop(run_manager):
 
 def test_a_page_that_changes_every_time_still_cannot_ask_forever(run_manager):
     """A carousel or a clock resets the per-page counter on every observation."""
-    from localapply.orchestrator.run_loop import MAX_HELP_REQUESTS, RunHandle
     from uuid import uuid4
+
+    from localapply.orchestrator.run_loop import MAX_HELP_REQUESTS, RunHandle
 
     handle = RunHandle(run_id=uuid4(), application_id=None, goal="apply", start_url="https://x")
 
