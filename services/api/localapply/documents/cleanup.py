@@ -55,6 +55,11 @@ _TIGHT_COLON = re.compile(r"([A-Za-z)])\:(?=[A-Za-z(])")
 #: "PHP ," -> "PHP,"
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([,;.)])")
 
+#: "React,TypeScript" -> "React, TypeScript". Only before a capital: "1,000" and "Ph.D,ii"
+#: keep their comma tight, and a lowercase continuation is far more likely to be a word the
+#: extractor split than a missing space.
+_TIGHT_COMMA = re.compile(r",(?=[A-Z])")
+
 #: A word broken across a line by hyphenation: "perfor-\nmance" -> "performance".
 _HYPHEN_BREAK = re.compile(r"([a-z])-\n([a-z])")
 
@@ -77,6 +82,7 @@ def repair(text: str) -> str:
         text = _split_glued(text, skill, pattern)
 
     text = _TIGHT_COLON.sub(r"\1: ", text)
+    text = _TIGHT_COMMA.sub(", ", text)
     text = _SPACE_BEFORE_PUNCT.sub(r"\1", text)
 
     # Collapse runs of spaces without touching line structure, which parsing depends on.

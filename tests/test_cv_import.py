@@ -363,3 +363,131 @@ def test_the_rendered_cv_is_not_a_row_dump(extraction):
     # No bullet glyphs or joined separators leaking into the rendered body.
     assert "•" not in body
     assert " · " not in body
+
+
+# --------------------------------------------------------------------------------------
+# Loose matching, and where it must stop
+#
+# Boundary-free skill matching exists because PDF extraction drops spaces: "Brevet GPTPython"
+# hides "Python" from every word-boundary pattern. With no left boundary it also matched
+# "git" inside "digital", and a real project line came out of the importer as two facts:
+# "Built a di" and "gital payments-style platform with structured backend workflows".
+# --------------------------------------------------------------------------------------
+
+
+def test_a_skill_glued_to_a_project_name_is_still_split():
+    """The case loose matching exists for. It must keep working."""
+    from localapply.documents.cv_parser import _split_title_from_stack
+
+    assert _split_title_from_stack("Brevet GPTPython, LLMs, Prompt Engineering") == (
+        "Brevet GPT", "Python, LLMs, Prompt Engineering"
+    )
+    assert _split_title_from_stack("Safha JadidaAngular, PHP, MySQL") == (
+        "Safha Jadida", "Angular, PHP, MySQL"
+    )
+
+
+def test_a_technology_name_hiding_inside_an_ordinary_word_is_not_a_split():
+    """The regression. "digital" contains "git"; it is not a stack boundary."""
+    from localapply.documents.cv_parser import _split_title_from_stack
+
+    line = "Built a digital payments-style platform with structured backend workflows"
+    assert _split_title_from_stack(line) == (line, "")
+
+
+def test_prose_that_merely_names_a_technology_is_not_a_stack():
+    """"LLM" here opens a sentence, not a technology list. Splitting on it produced a
+    project called "Uses"."""
+    from localapply.documents.cv_parser import _split_title_from_stack
+
+    line = "Uses LLM-based prompting strategies to generate clear, curriculum-aligned answers"
+    assert _split_title_from_stack(line) == (line, "")
+
+
+def test_glue_seam_accepts_a_boundary_and_a_capitalised_join_only():
+    import re
+
+    from localapply.documents.cv_parser import at_glue_seam
+
+    def seam(text, needle):
+        return at_glue_seam(text, re.search(re.escape(needle), text))
+
+    assert seam("EcoPay React, Laravel", "React"), "a plain word boundary"
+    assert seam("Safha JadidaAngular", "Angular"), "glue keeps the name's own spelling"
+    assert seam("Brevet GPTPython", "Python"), "glue after an acronym"
+    assert not seam("Built a digital platform", "git"), "a coincidental lowercase substring"
+
+
+def test_the_claim_checker_haystack_does_not_invent_a_skill_from_a_substring():
+    """A false separation only ever makes the checker *more* permissive: it would accept a
+    model claiming Git because the source happened to say "digital"."""
+    from localapply.documents.claims import check_claims
+
+    report = check_claims("Managed releases with Git.", ["Built a digital payments platform"])
+    assert "Git" in report.unsupported_skills
+
+
+def test_the_claim_checker_still_sees_a_glued_name():
+    """The reason loose normalisation exists at all -- it must not be lost to the fix."""
+    from localapply.documents.claims import check_claims
+
+    report = check_claims(
+        "Built services with Laravel and MySQL.", ["Engineered backend usingLaravelandMySQL"]
+    )
+    assert report.clean, report.describe()
+
+
+# --------------------------------------------------------------------------------------
+# PDF repair
+#
+# Untested until now, and the one module whose docstring records three rules that each
+# corrupted real words before being removed. A rule here that misfires puts a mangled word
+# on a CV, which is worse than the joined word it was trying to fix -- so the historical
+# failures are pinned as tests, not just as prose.
+# --------------------------------------------------------------------------------------
+
+
+def test_repair_separates_a_joiner_word_from_a_technology():
+    from localapply.documents.cleanup import repair
+
+    assert "using Laravel" in repair("Engineered backend usingLaravel")
+    assert "with Docker" in repair("Deployed withDocker")
+
+
+def test_repair_adds_the_space_a_comma_lost():
+    """"Engineered a cross-platform app using React,TypeScript, and React Native" came off a
+    real CV and onto a generated one."""
+    from localapply.documents.cleanup import repair
+
+    assert repair("using React,TypeScript, and React Native") == (
+        "using React, TypeScript, and React Native"
+    )
+
+
+def test_repair_leaves_a_thousands_separator_alone():
+    from localapply.documents.cleanup import repair
+
+    assert repair("Served 40,000 requests") == "Served 40,000 requests"
+
+
+def test_repair_never_splits_a_word_that_merely_starts_with_a_joiner():
+    """The removed rules turned "Instructor" into "In structor", "tooling" into "to oling",
+    "MySQL" into "My SQL", and "TypeScript" into "Type Script"."""
+    from localapply.documents.cleanup import repair
+
+    for word in ("Instructor", "tooling", "MySQL", "TypeScript", "Information", "Together"):
+        assert repair(word) == word
+
+
+def test_repair_fixes_ligatures_and_hyphenated_line_breaks():
+    from localapply.documents.cleanup import repair
+
+    assert repair("CERTIﬁCATIONS") == "CERTIfiCATIONS"
+    assert repair("perfor-\nmance") == "performance"
+
+
+def test_repair_keeps_line_structure():
+    """Section splitting depends on it; collapsing lines would take the headings with it."""
+    from localapply.documents.cleanup import repair
+
+    assert repair("EXPERIENCE\n\nRole, Company\n") == "EXPERIENCE\n\nRole, Company\n"

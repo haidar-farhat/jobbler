@@ -52,6 +52,35 @@ logger = logging.getLogger(__name__)
 
 S = ApplicationState
 
+#: How many times the agent may ask for help at a page that has not changed since it last
+#: asked. An ASK_USER is not an action, so it never reaches the executor and the action
+#: budget cannot bound it -- and a live run against the fixture proved what that costs: the
+#: model asked, the human approved, the page was identical, so the model asked again. The
+#: run cycled form_analyzed -> blocked -> user_intervention -> form_analyzed forever with
+#: `actions_executed` frozen at 13, and only a human noticing could stop it.
+#:
+#: One retry is deliberate. A person may approve a moment before the page settles, and
+#: failing on the first repeat would turn a mistimed click into a dead run.
+MAX_HELP_AT_ONE_PAGE = 2
+
+#: A backstop for a page that changes every observation -- a carousel, a clock, a spinner --
+#: which resets the per-page counter every time and would otherwise ask forever.
+MAX_HELP_REQUESTS = 12
+
+
+def help_page_key(observation: Observation) -> str:
+    """What the agent is looking at, for deciding whether help changed anything.
+
+    Element *refs* are deliberately excluded: the observer reassigns them on every
+    observation (ADR 0002), so including them would make every page look new and the guard
+    would never fire. Role, name and enabled state are what actually change when a person
+    solves a CAPTCHA or dismisses a login wall.
+    """
+    shape = sorted(
+        f"{e.role.value}:{e.name}:{int(e.enabled)}:{int(e.visible)}" for e in observation.elements
+    )
+    return "|".join([observation.url, observation.page_kind.value, *shape])
+
 
 def _known_values(reasoning: ReasoningContext) -> set[str]:
     """Every value the agent is permitted to enter, normalised for comparison.
@@ -94,6 +123,12 @@ class RunHandle:
     task: asyncio.Task | None = None
     session: BrowserSession | None = None
     error: str | None = None
+    #: Where the agent last asked for help, and how many times it has asked there. An
+    #: ASK_USER never reaches the executor, so the action budget cannot bound it -- see
+    #: MAX_HELP_AT_ONE_PAGE.
+    last_help_page: str | None = None
+    help_at_this_page: int = 0
+    help_requests: int = 0
 
     def snapshot(self) -> dict:
         return {
@@ -362,6 +397,12 @@ class RunManager:
                     return
 
                 if decision.action is ActionType.ASK_USER:
+                    stuck = self._help_would_repeat(handle, observation)
+                    if stuck is not None:
+                        await self._bus.emit(handle.run_id, EventType.RUN_FAILED, stuck)
+                        await self._finish(handle, "failed", stuck)
+                        return
+
                     # Raise a real approval rather than pausing silently. An earlier version
                     # just set the status and waited, so the dashboard showed
                     # "waiting_approval" with nothing to act on and the run sat there
@@ -523,6 +564,39 @@ class RunManager:
             return True
 
         return False
+
+    def _help_would_repeat(self, handle: RunHandle, observation: Observation) -> str | None:
+        """Record this request for help, and say why the run should stop if it is going in
+        circles. `None` means carry on and ask.
+
+        The agent asking for help is normal -- a CAPTCHA, a login wall, a question only the
+        person can answer. Asking the *same* question about the *same* unchanged page after
+        the person has already responded is not: nothing the human did moved the run, so
+        asking again will not either. Failing with a reason beats a loop the user has to
+        notice and kill by hand.
+        """
+        page = help_page_key(observation)
+        if page == handle.last_help_page:
+            handle.help_at_this_page += 1
+        else:
+            handle.last_help_page = page
+            handle.help_at_this_page = 0
+        handle.help_requests += 1
+
+        if handle.help_at_this_page >= MAX_HELP_AT_ONE_PAGE:
+            return (
+                f"Stopping: the agent has asked for help {handle.help_at_this_page + 1} times "
+                f"about the same page and nothing on it changed in between. It cannot get "
+                f"past this step on its own. Finish this application in the browser, or "
+                f"start a new run once the page has moved on."
+            )
+        if handle.help_requests > MAX_HELP_REQUESTS:
+            return (
+                f"Stopping: the agent has asked for help {handle.help_requests} times in one "
+                f"run, which is more than this step should ever need. Something on this site "
+                f"is not working the way the agent expects."
+            )
+        return None
 
     async def _ask_for_help(
         self, handle: RunHandle, observation: Observation, decision: Decision

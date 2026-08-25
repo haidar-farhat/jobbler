@@ -156,6 +156,27 @@ _LOOSE_SKILL_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Exact spellings, for telling a glued name apart from a coincidental substring.
+_CANONICAL_SKILLS = frozenset(KNOWN_SKILLS)
+
+
+def at_glue_seam(text: str, match: re.Match[str]) -> bool:
+    """Could a technology name really begin where this boundary-free match starts?
+
+    Loose matching exists because PDF extraction drops spaces: "Brevet GPTPython" hides
+    "Python" from any word-boundary pattern, and that is the whole case it handles. But a
+    pattern with no left boundary also matches "git" inside "digital", which split a real
+    project line into "Built a di" and "gital payments-style platform".
+
+    The tell is capitalisation. Glue preserves a name's own spelling -- "GPTPython",
+    "JadidaAngular" -- while a coincidental substring does not. So mid-word, only an
+    exactly-spelled name counts; at a real word boundary, any casing does.
+    """
+    start = match.start()
+    if start == 0 or not (text[start - 1].isalnum() or text[start - 1] == "_"):
+        return True
+    return match.group(0) in _CANONICAL_SKILLS
+
 #: Split a skills line into individual skills. The slash is a separator only when spaced:
 #: an unspaced one is usually part of the name ("CI/CD", "TCP/IP"), and splitting on it
 #: produced three bogus entries -- "CI", "CD" and "CI/CD" -- on the rendered CV.
@@ -551,20 +572,41 @@ def _trim_to_word(text: str, limit: int) -> str:
     return (cut[:space] if space > limit * 0.6 else cut).rstrip(" ,;.-") + "..."
 
 
+#: A stack entry is a name, not a clause. Thirty characters covers "Prompt Engineering" and
+#: "GitHub Actions" while excluding the sentence fragments that a mis-split produces.
+_MAX_STACK_ITEM = 30
+
+
+def _looks_like_a_stack(tail: str) -> bool:
+    """Does this read as a comma-separated technology list rather than prose?"""
+    parts = [p.strip() for p in SKILL_SPLIT_RE.split(tail) if p.strip()]
+    return bool(parts) and all(len(p) <= _MAX_STACK_ITEM for p in parts)
+
+
 def _split_title_from_stack(line: str) -> tuple[str, str]:
     """Separate a project name from the technology list run into it.
 
     "Brevet GPTPython, LLMs, Prompt Engineering" -> ("Brevet GPT", "Python, LLMs, Prompt
     Engineering"). The first known technology name marks where the stack begins.
+
+    Two things have to hold before a match is believed, and both were learned from real
+    output. The match must sit at a plausible seam (`at_glue_seam`), or "digital" splits
+    into "di" + "gital". And what follows must actually read as a technology list rather
+    than a sentence that happens to name one -- otherwise "Uses LLM-based prompting
+    strategies to generate clear, curriculum-aligned explanations" becomes a project called
+    "Uses".
     """
     # Loose matching, deliberately. The strict pattern requires a word boundary, so it
     # cannot see "Python" inside "GPTPython" -- which is the whole case being handled.
-    match = _LOOSE_SKILL_RE.search(line)
-
-    # Only treat it as a stack if a real title precedes it.
-    if match is None or match.start() < 3:
-        return clean_line(line), ""
-    return clean_line(line[: match.start()]).rstrip(" ,;-–—"), clean_line(line[match.start():])
+    for match in _LOOSE_SKILL_RE.finditer(line):
+        # Only treat it as a stack if a real title precedes it.
+        if match.start() < 3 or not at_glue_seam(line, match):
+            continue
+        tail = line[match.start():]
+        if not _looks_like_a_stack(tail):
+            continue
+        return clean_line(line[: match.start()]).rstrip(" ,;-–—"), clean_line(tail)
+    return clean_line(line), ""
 
 
 def _extract_simple(sections: dict[str, list[str]], name: str, category: str,

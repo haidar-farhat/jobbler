@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .cv_parser import KNOWN_SKILLS, skill_pattern
+from .cv_parser import KNOWN_SKILLS, at_glue_seam, skill_pattern
 
 _SKILL_PATTERNS = [(skill, skill_pattern(skill)) for skill in KNOWN_SKILLS]
 
@@ -92,7 +92,12 @@ def _searchable(texts: list[str]) -> str:
     # Loose patterns, deliberately: the strict one used for *detecting* a claim has word
     # boundaries, so it cannot see "Laravel" inside "usingLaravelandMySQL" either -- which is
     # exactly the text we are trying to make searchable.
-    separated = _LOOSE_ALTERNATION.sub(lambda m: f" {m.group(0)} ", joined)
+    # Only at a seam a name could really begin. Without that check "digital" was separated
+    # into " git al", putting Git into the haystack -- and a model claiming Git would then
+    # pass the check on the strength of a word that merely contains those letters.
+    separated = _LOOSE_ALTERNATION.sub(
+        lambda m: f" {m.group(0)} " if at_glue_seam(joined, m) else m.group(0), joined
+    )
 
     # A generic lowercase-to-uppercase split used to run here too, and it undid the work
     # above: the freshly separated " MySQL " was split again into " My SQL ", losing the

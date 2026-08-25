@@ -309,3 +309,22 @@ def test_bullets_are_separate_from_the_headline(cv):
         "a bullet must not be merged into the role line"
     )
     assert "<li>Engineered backend services" in cv.replace("\n", "").replace("  ", "")
+
+
+def test_a_slash_joined_pair_is_grouped_by_its_parts():
+    """A CV writes "Git/GitHub" as one entry. An exact lookup misses it, and it landed
+    alone under "Other" while Docker sat under Tools & Platforms."""
+    from localapply.documents.taxonomy import group_of
+
+    assert group_of("Git/GitHub") == "Tools & Platforms"
+    assert group_of("HTML/CSS") == "Languages"
+    # Already listed as a name in its own right; the slash is part of it.
+    assert group_of("CI/CD") == "Tools & Platforms"
+
+
+def test_a_slash_pair_spanning_groups_stays_in_other():
+    """Guessing a group for "Python/React" would be worse than declining to."""
+    from localapply.documents.taxonomy import OTHER_GROUP, group_of
+
+    assert group_of("Python/React") == OTHER_GROUP
+    assert group_of("Blender/Unreal") == OTHER_GROUP

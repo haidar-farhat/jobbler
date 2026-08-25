@@ -108,8 +108,26 @@ def is_presentable(value: str) -> bool:
 
 
 def group_of(value: str) -> str:
-    """Which CV group a skill belongs under."""
-    return _GROUP_OF.get(" ".join(value.split()).casefold(), OTHER_GROUP)
+    """Which CV group a skill belongs under.
+
+    A CV writes related tools as one entry -- "Git/GitHub", "HTML/CSS" -- and an exact
+    lookup misses every one of them. Splitting on the slash puts "Git/GitHub" beside Docker
+    under Tools & Platforms instead of stranding it alone under "Other", which is what a
+    reader notices. Parts that disagree keep the entry in "Other": "Python/React" belongs to
+    no single group, and guessing one would be worse than saying nothing.
+    """
+    text = " ".join(value.split()).casefold()
+    direct = _GROUP_OF.get(text)
+    if direct is not None:
+        return direct
+
+    if "/" in text:
+        groups = {_GROUP_OF.get(part.strip()) for part in text.split("/") if part.strip()}
+        groups.discard(None)
+        if len(groups) == 1:
+            return groups.pop()
+
+    return OTHER_GROUP
 
 
 def group_skills(values: list[str]) -> list[tuple[str, list[str]]]:

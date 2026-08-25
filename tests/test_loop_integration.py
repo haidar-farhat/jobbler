@@ -369,3 +369,86 @@ async def test_the_warning_about_hand_filled_fields_is_persisted(run_manager, st
     warnings = [r for r in rows if r.type == "log" and "Left for you" in r.message]
     assert warnings, "the hand-fill warning must reach the durable log, not only the UI"
     assert any("signature" in f.lower() for f in warnings[0].payload["fields"])
+
+
+# --------------------------------------------------------------------------------------
+# Asking for help must terminate
+#
+# Found by driving a real run: the reasoner returned ASK_USER, the human approved without
+# changing anything in the browser, the page was therefore identical, and the reasoner
+# asked again. The run cycled form_analyzed -> blocked -> user_intervention -> form_analyzed
+# indefinitely with `actions_executed` frozen, because an ASK_USER never reaches the
+# executor and so never spends the action budget.
+# --------------------------------------------------------------------------------------
+
+
+def observation_with(url: str, names: list[str]):
+    from localapply.contracts import ElementRole, Observation, ObservedElement
+    from uuid import uuid4
+
+    return Observation(
+        run_id=uuid4(),
+        url=url,
+        title="Apply",
+        elements=[
+            ObservedElement(ref=f"e{i}", role=ElementRole.TEXTBOX, name=name)
+            for i, name in enumerate(names, start=1)
+        ],
+    )
+
+
+def test_the_page_key_ignores_refs_but_notices_the_page_changing():
+    """Refs are reassigned on every observation (ADR 0002). Keying on them would make every
+    page look new and the guard would never fire."""
+    from localapply.orchestrator.run_loop import help_page_key
+
+    first = observation_with("https://x/apply", ["Email", "Phone"])
+    again = observation_with("https://x/apply", ["Email", "Phone"])
+    assert help_page_key(first) == help_page_key(again)
+
+    solved = observation_with("https://x/apply", ["Email", "Phone", "Submit application"])
+    assert help_page_key(first) != help_page_key(solved)
+    assert help_page_key(first) != help_page_key(observation_with("https://x/done", ["Email", "Phone"]))
+
+
+def test_repeated_help_about_an_unchanged_page_stops_the_run(run_manager):
+    """The regression, as a pure unit check on the guard."""
+    from localapply.orchestrator.run_loop import MAX_HELP_AT_ONE_PAGE, RunHandle
+    from uuid import uuid4
+
+    handle = RunHandle(run_id=uuid4(), application_id=None, goal="apply", start_url="https://x")
+    page = observation_with("https://x/apply", ["Email"])
+
+    for _ in range(MAX_HELP_AT_ONE_PAGE):
+        assert run_manager._help_would_repeat(handle, page) is None, "asking is normal"
+
+    stuck = run_manager._help_would_repeat(handle, page)
+    assert stuck is not None, "an unchanged page must not be asked about forever"
+    assert "nothing on it changed" in stuck
+
+
+def test_help_after_the_page_actually_changes_is_not_a_loop(run_manager):
+    """Resolving a CAPTCHA changes the page. The agent must be free to ask again."""
+    from localapply.orchestrator.run_loop import MAX_HELP_AT_ONE_PAGE, RunHandle
+    from uuid import uuid4
+
+    handle = RunHandle(run_id=uuid4(), application_id=None, goal="apply", start_url="https://x")
+
+    for step in range(MAX_HELP_AT_ONE_PAGE + 3):
+        page = observation_with("https://x/apply", [f"Question {step}"])
+        assert run_manager._help_would_repeat(handle, page) is None
+
+
+def test_a_page_that_changes_every_time_still_cannot_ask_forever(run_manager):
+    """A carousel or a clock resets the per-page counter on every observation."""
+    from localapply.orchestrator.run_loop import MAX_HELP_REQUESTS, RunHandle
+    from uuid import uuid4
+
+    handle = RunHandle(run_id=uuid4(), application_id=None, goal="apply", start_url="https://x")
+
+    results = [
+        run_manager._help_would_repeat(handle, observation_with("https://x/a", [f"t{i}"]))
+        for i in range(MAX_HELP_REQUESTS + 2)
+    ]
+    assert results[-1] is not None
+    assert "more than this step should ever need" in results[-1]
