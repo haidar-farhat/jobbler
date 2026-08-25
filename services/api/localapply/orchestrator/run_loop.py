@@ -41,6 +41,7 @@ from ..contracts import (
 from ..db import models as m
 from ..db.session import session_factory
 from ..events.bus import EventBus
+from ..notify import Notice, Notifications
 from ..policy.capabilities import capabilities_for
 from ..policy.engine import PolicyEngine
 from ..policy.field_classifier import FieldClass, classify
@@ -164,6 +165,7 @@ class RunManager:
         policy: PolicyEngine,
         executor: BrowserExecutor,
         bus: EventBus,
+        notifier=None,
     ) -> None:
         self._settings = settings
         self._browser = browser
@@ -172,6 +174,9 @@ class RunManager:
         self._policy = policy
         self._executor = executor
         self._bus = bus
+        # Silence by default. A run must work with nothing configured, and every
+        # existing caller predates this argument.
+        self._notifier = notifier or Notifications([])
         self._runs: dict[UUID, RunHandle] = {}
         # `agent_events` is the durable audit trail and the source for post-hoc replay.
         # Without this the stream would exist only in memory and vanish on restart.
@@ -637,6 +642,21 @@ class RunManager:
             )
         return None
 
+    async def _tell_the_user(self, handle: RunHandle, what: str, detail: str) -> None:
+        """Say that something is waiting, without saying what it is.
+
+        The body names the field, never the value: the values here are your name, your phone
+        number and your salary expectations, and a push service is a third party.
+
+        Awaited rather than fired-and-forgotten so a test can observe it, but every notifier
+        is individually timeout-bounded and swallows its own failures -- a person is already
+        standing in front of this approval.
+        """
+        url = (self._settings.public_url or "").strip() or None
+        await self._notifier.send(
+            Notice(title=what, body=detail, url=url, urgency="high")
+        )
+
     async def _ask_for_help(
         self, handle: RunHandle, observation: Observation, decision: Decision
     ) -> bool:
@@ -657,6 +677,11 @@ class RunManager:
         handle.pending = pending
         handle.status = "waiting_approval"
 
+        await self._tell_the_user(
+            handle,
+            "LocalApply needs you",
+            f"The agent is stuck on {observation.title or observation.url}.",
+        )
         await self._bus.emit(
             handle.run_id,
             EventType.APPROVAL_REQUESTED,
@@ -714,6 +739,15 @@ class RunManager:
         pending = PendingApproval(approval_id=approval.id, decision=decision)
         handle.pending = pending
 
+        # The field, never the value. See `_tell_the_user`.
+        element = (
+            observation.element(decision.target_ref) if decision.target_ref else None
+        )
+        await self._tell_the_user(
+            handle,
+            "An application needs your approval",
+            f"{decision.action.value} on {element.name if element else 'this page'}",
+        )
         await self._bus.emit(
             handle.run_id,
             EventType.APPROVAL_REQUESTED,

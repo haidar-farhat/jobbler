@@ -15,14 +15,15 @@ Python, no model — decides. The executor performs mechanical Playwright operat
 interprets nothing. Every step is appended to a log that drives both the live dashboard and
 offline replay.
 
-**Status: the loop, your CV, your documents, and the job pipeline.** The whole agent loop
+**Status: the loop, your CV, your documents, the job pipeline, and discovery.** The whole agent loop
 runs end to end against a local HTML fixture, driven either by a deterministic scripted
 reasoner or by a local model through Ollama. Your CV is parsed into individually-approved
 facts you can correct by hand, and tailored CVs and cover letters are generated from them —
 grounded, so every line traces to a fact you accepted. A job posting goes on a board, gets
 scored against your accepted skills, waits for you to approve it, gets its own documents, and
-is then handed to the agent. Automatic discovery is still out of scope on purpose; see
-[Not built yet](#not-built-yet).
+is then handed to the agent. Point it at a company on Greenhouse, Lever or Ashby and new
+postings arrive on the board already scored. Record what came back and it will tell you
+whether any of it is working.
 
 - [Architecture](docs/architecture.md)
 - [Agent protocol](docs/agent-protocol.md)
@@ -56,6 +57,14 @@ These are enforced structurally and covered by tests, not asserted in a prompt:
   pipeline, and no automated path reads the score. Getting past `RECOMMENDED` takes a request
   from you carrying an explicit confirmation. Only vocabulary words and booleans are ever
   written to the database from a posting; an assertion runs before the commit.
+- **The API is behind a token.** Generated on first run and written to `.env`. This
+  machine is exempt, because a login screen on a local dashboard is one people turn
+  off; anything else needs it. The app **refuses to start** bound to a network address
+  with no token set — that is the one hard ordering constraint in the roadmap, and it is
+  enforced in code rather than remembered.
+- **A notification never carries a value.** It says which field needs approving, not
+  what would go in it: those values are your name, your phone number and your salary
+  expectations, and a push service is a third party.
 - **A run always terminates.** The action budget bounds executed actions, and asking for help
   about a page that has not changed twice in a row ends the run with a reason instead of
   looping.
@@ -74,6 +83,36 @@ stuck comes back with `POST /jobs/{id}/unblock` — the server chooses where it 
 Reading a posting from its URL is optional and explicit. It opens the URL *you typed*, once,
 in a plain browser with no stored session — and if the page wants a login or shows a CAPTCHA
 it stores nothing and parks the job for you. See [On real job sites](#on-real-job-sites).
+
+## Watched boards
+
+Greenhouse, Lever and Ashby publish their job boards as public JSON. Point at a company and
+every new posting arrives on your board, already scored:
+
+```
+POST /searches {"source": "greenhouse", "handle": "vercel", "include": ["engineer"]}
+POST /searches/run
+```
+
+Documented public endpoints only — no key, no registration, no scraping of HTML that needs a
+browser to render. One request per board per run, paced per host, stopped instantly by the
+kill switch, and deduplicated on `(source, external_id)` so running a search twice is a no-op
+rather than a second copy of every job.
+
+Nothing runs on a timer. A local-first app that is only on when you are looking at it has
+nowhere to hide a scheduler, and a search that fires while you are asleep is one whose
+results you cannot watch it produce.
+
+## Did it work?
+
+Record what came back — replied, screening, interviewed, offer, rejected — and the board will
+tell you what is actually working: reply rate by match score, by board, by company, and how
+long people take to answer. Silence past five weeks reads as ghosted, derived from the clock
+rather than stored, so a reply in week six simply undoes it.
+
+Rates from fewer than five applications are shown greyed out and labelled. Three applications
+with one reply is not a 33% reply rate, and presenting it as one invites a decision the data
+cannot support.
 
 ## Requirements
 
@@ -121,7 +160,9 @@ quick.
   Ready  http://127.0.0.1:8000/
 ```
 
-Flags: `--port <n>`, `--no-browser`, `--no-seed`. Rebuild it after changing the launcher:
+Flags: `--port <n>`, `--no-browser`, `--no-seed`, `--show-token`. Without `--port` the
+launcher moves to the next free port rather than refusing to start over one nobody chose.
+Rebuild it after changing the launcher:
 
 ```powershell
 .\services\api\.venv\Scripts\python.exe launcher\build.py
@@ -280,7 +321,7 @@ What is covered:
 Run end to end on 2026-08-25 against Python 3.14.7, Postgres 16, Redis 7, Chromium 1234:
 
 ```
-435 passed in 140.14s
+587 passed in 103.28s
 ```
 
 A live run driven through the HTTP API, approvals submitted with `source=phone`:
@@ -426,7 +467,7 @@ state, not a config echo. A 7-8B Q4 reasoner is the realistic ceiling on this ca
 be noticeably slower than the scripted reasoner.
 
 ```bash
-pytest              # 435 tests, no model needed
+pytest              # 587 tests, no model needed
 pytest -m ollama    # 5 live checks against a running Ollama
 ```
 
@@ -436,8 +477,8 @@ object naming a real ref.
 
 ## Not built yet
 
-Automatic job-board discovery (Phase 6) · React Native app (Phase 9) · WireGuard remote
-access (Phase 10). Each has an interface stub so it drops in without a refactor.
+React Native app (Phase 9) · WireGuard remote access (Phase 10) · the agent looking at the
+page rather than reading its accessibility tree · data export and backup.
 
 Phase 5 ingests **one posting at a time, chosen by you**. Bulk ingest, the Greenhouse / Lever
 / Ashby JSON APIs, polling and dedupe on `(source, external_id)` all belong to Phase 6 —

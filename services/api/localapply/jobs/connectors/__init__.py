@@ -24,8 +24,8 @@ evidence in their comments so a future edit does not quietly undo it.
 
 from __future__ import annotations
 
-from .base import BOARDS, Connector, Posting, connector_for
 from .ashby import AshbyConnector
+from .base import BOARDS, Connector, Posting, connector_for
 from .greenhouse import GreenhouseConnector
 from .lever import LeverConnector
 

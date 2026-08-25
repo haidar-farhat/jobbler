@@ -11,6 +11,7 @@ is the property the whole design rests on.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -28,6 +29,7 @@ from ...documents.pipeline import (
     build_document,
 )
 from ...events.bus import EventBus
+from ...jobs import outcomes as O
 from ...jobs import pipeline as P
 from ...orchestrator.run_loop import RunManager
 from ...orchestrator.state_machine import ApplicationState as S
@@ -83,6 +85,16 @@ class ApplyIn(BaseModel):
 
 class CancelIn(BaseModel):
     reason: str = "Not interested"
+
+
+class OutcomeIn(BaseModel):
+    """What the employer did. Recorded by you, not inferred by anything."""
+
+    kind: str
+    note: str = ""
+    #: When it happened, which is not when you typed it. Recording last week's rejection
+    #: today would otherwise make every response time in your stats a lie.
+    occurred_at: datetime | None = None
 
 
 # --------------------------------------------------------------------------------------
@@ -229,13 +241,23 @@ async def list_jobs(
     documents = {
         job.id: await _documents_for(session, job.id) for job, _ in page
     }
+    # One query for the whole page. Per-row would be one round trip per job, which is the
+    # shape of every list page that gets slow six months in.
+    stories = await O.stories_for(session, [application for _, application in page])
     return {
         "total": len(kept),
         "limit": limit,
         "offset": offset,
         "counts": counts,
         "jobs": [
-            P.job_view(job, application, documents=documents[job.id])
+            P.job_view(
+                job,
+                application,
+                documents=documents[job.id],
+                outcome=stories[application.id].as_dict()
+                if application.state == S.SUBMITTED.value
+                else None,
+            )
             for job, application in page
         ],
     }
@@ -272,6 +294,9 @@ async def read_job(job_id: UUID, session: AsyncSession = Depends(get_session)) -
         documents=[document_summary(d) for d in documents],
         runs=[P.run_view(r) for r in runs],
         history=P.transition_history(history),
+        outcome=(await O.story_for(session, application)).as_dict()
+        if application.state == S.SUBMITTED.value
+        else None,
         full=True,
     )
 
@@ -614,6 +639,54 @@ async def unblock(
 
     target = await P.resume_from_blocked(session, application)
     return {**P.job_view(job, application), "resumed_to": target.value}
+
+
+@router.post("/{job_id}/outcome", status_code=201)
+async def record_outcome(
+    job_id: UUID, payload: OutcomeIn, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Say what happened after you applied.
+
+    Writes to its own table and leaves `applications.state` alone -- see
+    `jobs/outcomes.py` for why an outcome is deliberately not a state.
+    """
+    _, application = await _load(session, job_id)
+    if application.state != S.SUBMITTED.value:
+        raise HTTPException(
+            409,
+            f"This application is {application.state}. There is no outcome to record until "
+            f"it has actually been sent.",
+        )
+
+    try:
+        await O.record(
+            session, application, payload.kind,
+            note=payload.note, occurred_at=payload.occurred_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    return (await O.story_for(session, application)).as_dict()
+
+
+@router.get("/stats/outcomes")
+async def outcome_stats(session: AsyncSession = Depends(get_session)) -> dict:
+    """Is this working?
+
+    Every number here is over applications actually sent. A reply rate across jobs you never
+    applied for would be a very flattering and completely meaningless figure.
+    """
+    rows = (
+        await session.execute(
+            select(m.Job, m.Application)
+            .join(m.Application, m.Application.job_id == m.Job.id)
+            .where(m.Application.state == S.SUBMITTED.value)
+        )
+    ).all()
+
+    applications = [application for _, application in rows]
+    stories = await O.stories_for(session, applications)
+    return O.summarise([(job, app, stories[app.id]) for job, app in rows])
 
 
 @router.post("/{job_id}/cancel")

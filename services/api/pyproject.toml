@@ -47,6 +47,10 @@ packages = ["localapply"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Alembic writes these, and its column definitions run long. Reformatting generated
+# files means every future `alembic revision --autogenerate` fails the linter on code
+# nobody wrote. Hand-written migrations in here still get read in review.
+extend-exclude = ["migrations/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

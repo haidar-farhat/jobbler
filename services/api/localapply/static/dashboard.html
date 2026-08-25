@@ -291,6 +291,45 @@
   </section>
 
   <section class="span2">
+    <h2>Watched boards — jobs arrive here on their own</h2>
+    <div class="body">
+      <p class="muted" style="margin:0 0 .7rem;font-size:.8rem">
+        Greenhouse, Lever and Ashby publish their job boards as public JSON. Point at a
+        company and every new posting lands below, already scored against your accepted
+        skills. Nothing is applied for — you still decide.
+      </p>
+      <div class="row">
+        <label style="flex:0 0 11rem">Board
+          <select id="search-source" style="width:100%;padding:.5rem;margin-top:.3rem;
+            border:1px solid var(--edge);border-radius:5px;background:var(--surface);
+            color:var(--ink);font:inherit"></select>
+        </label>
+        <label style="flex:1;min-width:12rem">Company handle
+          <input id="search-handle" placeholder="e.g. vercel">
+        </label>
+        <label style="flex:1;min-width:10rem">Only titles containing
+          <input id="search-include" placeholder="engineer, developer">
+        </label>
+        <label style="flex:0 0 9rem">Hide below
+          <input id="search-score" value="0" placeholder="0.4">
+        </label>
+        <button class="primary" id="b-add-search">Watch</button>
+      </div>
+      <p class="muted" id="search-hint" style="font-size:.75rem;margin:.5rem 0 0"></p>
+      <div id="searches" style="margin-top:.9rem"></div>
+      <div style="display:flex;gap:.6rem;margin-top:.8rem;align-items:center">
+        <button id="b-run-searches">Check every board now</button>
+        <span class="muted" id="search-status" style="font-size:.8rem"></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="span2">
+    <h2>Is this working?</h2>
+    <div class="body" id="stats"><p class="muted">Nothing sent yet.</p></div>
+  </section>
+
+  <section class="span2">
     <h2>Board</h2>
     <div class="body" id="jobs-table"><p class="muted">Loading…</p></div>
   </section>
@@ -300,8 +339,27 @@
 const $ = id => document.getElementById(id);
 let runId = null, source = null, seen = new Set(), lastShot = null;
 
+// On this machine no token is needed — loopback is exempt, or a local dashboard would open
+// on a login screen. Reached over a tunnel it is required, and remembered per browser so a
+// phone is paired once rather than on every visit.
+let apiToken = "";
+try { apiToken = localStorage.getItem("localapply-token") || ""; } catch (e) { apiToken = ""; }
+
 async function api(path, opts) {
-  const r = await fetch(path, Object.assign({headers: {"Content-Type": "application/json"}}, opts));
+  const headers = {"Content-Type": "application/json"};
+  if (apiToken) headers["X-LocalApply-Token"] = apiToken;
+  const r = await fetch(path, Object.assign({headers: headers}, opts));
+
+  if (r.status === 401) {
+    const entered = window.prompt(
+      "This LocalApply needs your token.\n\nGet it by running:  LocalApply.exe --show-token"
+    );
+    if (entered) {
+      apiToken = entered.trim();
+      try { localStorage.setItem("localapply-token", apiToken); } catch (e) { /* private mode */ }
+      return api(path, opts);
+    }
+  }
   if (!r.ok) throw new Error(r.status + " " + (await r.text()));
   return r.status === 204 ? null : r.json();
 }
@@ -416,7 +474,10 @@ function attachStream(id) {
   seen = new Set();
   lastShot = null;
   $("log").innerHTML = "";
-  source = new EventSource("/agent/runs/" + id + "/events");
+  // EventSource cannot set headers, so this is the one place the token rides in the query
+  // string. The gate documents that exception rather than accepting it everywhere.
+  source = new EventSource("/agent/runs/" + id + "/events"
+    + (apiToken ? "?token=" + encodeURIComponent(apiToken) : ""));
 
   const onEvent = e => {
     if (!e.data || e.data === "{}") return;
@@ -526,16 +587,33 @@ function jobRow(j) {
     ? '<div class="muted" style="font-size:.7rem">missing ' + esc(j.missing_required.join(", "))
       + "</div>"
     : "";
-  const actions = (JOB_ACTIONS[j.state] || [])
-    .map(a => '<button data-job="' + j.job_id + '" data-act="' + a[0] + '">'
-      + esc(a[1]) + "</button>")
-    .join(" ");
+  const actions = j.state === "submitted"
+    ? '<select data-outcome="' + j.job_id + '" style="padding:.3rem;border:1px solid '
+      + 'var(--edge);border-radius:5px;background:var(--surface);color:var(--ink);'
+      + 'font:inherit;font-size:.78rem;width:auto">'
+      + '<option value="">What happened?</option>'
+      + OUTCOMES.map(o => '<option value="' + o[0] + '">' + esc(o[1]) + "</option>").join("")
+      + "</select>"
+    : (JOB_ACTIONS[j.state] || [])
+        .map(a => '<button data-job="' + j.job_id + '" data-act="' + a[0] + '">'
+          + esc(a[1]) + "</button>")
+        .join(" ");
+
+  // What came back, once anything has.
+  const heard = j.outcome && j.outcome.status !== "applied"
+    ? ' <span class="state ' + esc(j.outcome.status) + '">'
+      + esc(j.outcome.status.replace(/_/g, " ")) + "</span>"
+      + (j.outcome.days_to_reply !== null && j.outcome.days_to_reply !== undefined
+          ? ' <span class="muted" style="font-size:.7rem">after '
+            + j.outcome.days_to_reply + "d</span>"
+          : "")
+    : "";
 
   return "<tr><td><b>" + esc(j.title) + "</b>"
     + (j.company ? '<div class="muted" style="font-size:.75rem">' + esc(j.company) + "</div>" : "")
     + "</td>"
     + '<td><span class="state ' + esc(j.state) + '">' + esc(j.state.replace(/_/g, " "))
-    + "</span>"
+    + "</span>" + heard
     + (j.recommendation ? ' <span class="muted" style="font-size:.7rem">'
         + esc(j.recommendation) + "</span>" : "")
     + "</td>"
@@ -544,10 +622,217 @@ function jobRow(j) {
     + '<td style="white-space:nowrap">' + actions + "</td></tr>";
 }
 
+// --------------------------------------------------------------------------------------
+// Watched boards
+// --------------------------------------------------------------------------------------
+
+let boardsBySource = {};
+
+async function loadBoards() {
+  let boards;
+  try { boards = await api("/searches/boards"); } catch (e) { return; }
+  boardsBySource = {};
+  boards.forEach(b => { boardsBySource[b.source] = b; });
+  $("search-source").innerHTML = boards
+    .map(b => '<option value="' + esc(b.source) + '">' + esc(b.source) + "</option>")
+    .join("");
+  showHandleHint();
+}
+
+// Every board calls the handle something different — board token, company slug, job board
+// name — and asking for "the handle" without saying which earns a 404 nobody can debug.
+function showHandleHint() {
+  const board = boardsBySource[$("search-source").value];
+  $("search-hint").textContent = board ? board.handle_label : "";
+}
+$("search-source").onchange = showHandleHint;
+
+function searchRow(s) {
+  const last = s.last_result || {};
+  const when = s.last_run_at
+    ? new Date(s.last_run_at).toLocaleString()
+    : "never checked";
+  const outcome = last.error
+    ? '<span style="color:var(--danger)">' + esc(last.error) + "</span>"
+    : (s.last_run_at
+        ? esc(`${last.added || 0} added, ${last.already_known || 0} already known`)
+        : '<span class="muted">—</span>');
+
+  return "<tr><td><b>" + esc(s.label) + "</b>"
+    + '<div class="muted" style="font-size:.72rem">' + esc(s.source) + " / "
+    + esc(s.handle) + (s.include.length ? " · " + esc(s.include.join(", ")) : "")
+    + (s.min_score ? " · above " + Math.round(s.min_score * 100) + "%" : "") + "</div></td>"
+    + '<td class="muted" style="font-size:.75rem">' + esc(when) + "</td>"
+    + '<td style="font-size:.78rem">' + outcome + "</td>"
+    + '<td style="white-space:nowrap">'
+    + '<button data-search="' + s.id + '" data-sact="run">Check now</button> '
+    + '<button data-search="' + s.id + '" data-sact="toggle">'
+    + (s.enabled ? "Pause" : "Resume") + "</button> "
+    + '<button data-search="' + s.id + '" data-sact="forget">Forget</button>'
+    + "</td></tr>";
+}
+
+async function loadSearches() {
+  let rows;
+  try { rows = await api("/searches"); } catch (e) { jobsErr(String(e.message || e)); return; }
+  $("searches").innerHTML = rows.length
+    ? "<table><thead><tr><th>Board</th><th>Last checked</th><th>Result</th><th></th>"
+      + "</tr></thead><tbody>" + rows.map(searchRow).join("") + "</tbody></table>"
+    : '<p class="muted" style="font-size:.85rem">No boards watched yet.</p>';
+}
+
+$("b-add-search").onclick = async () => {
+  const handle = $("search-handle").value.trim();
+  if (!handle) { jobsErr("A board needs a company handle."); return; }
+
+  $("b-add-search").disabled = true;
+  $("search-status").textContent = "Adding…";
+  jobsErr("");
+  try {
+    const created = await api("/searches", {
+      method: "POST",
+      body: JSON.stringify({
+        source: $("search-source").value,
+        handle: handle,
+        label: handle,
+        include: $("search-include").value.split(",").map(s => s.trim()).filter(Boolean),
+        min_score: parseFloat($("search-score").value) || 0,
+      }),
+    });
+    $("search-handle").value = "";
+    $("search-status").textContent = "Checking the board…";
+    const run = await api("/searches/" + created.id + "/run", { method: "POST", body: "{}" });
+    $("search-status").textContent = run.summary;
+    await loadSearches();
+    await loadJobs();
+  } catch (e) {
+    jobsErr(String(e.message || e));
+    $("search-status").textContent = "";
+    await loadSearches();
+  } finally {
+    $("b-add-search").disabled = false;
+  }
+};
+
+$("b-run-searches").onclick = async () => {
+  $("b-run-searches").disabled = true;
+  $("search-status").textContent = "Checking every board…";
+  jobsErr("");
+  try {
+    const result = await api("/searches/run", { method: "POST", body: "{}" });
+    $("search-status").textContent = result.summary;
+    await loadSearches();
+    await loadJobs();
+  } catch (e) {
+    jobsErr(String(e.message || e));
+    $("search-status").textContent = "";
+  } finally {
+    $("b-run-searches").disabled = false;
+  }
+};
+
+$("searches").addEventListener("click", async ev => {
+  const id = ev.target.dataset.search;
+  const act = ev.target.dataset.sact;
+  if (!id || !act) return;
+
+  ev.target.disabled = true;
+  jobsErr("");
+  try {
+    if (act === "run") {
+      $("search-status").textContent = "Checking…";
+      const result = await api("/searches/" + id + "/run", { method: "POST", body: "{}" });
+      $("search-status").textContent = result.summary;
+      await loadJobs();
+    } else if (act === "toggle") {
+      const current = (await api("/searches")).find(s => s.id === id);
+      await api("/searches/" + id,
+        { method: "PATCH", body: JSON.stringify({ enabled: !current.enabled }) });
+    } else if (act === "forget") {
+      // The jobs it already found stay. They are yours now, not the search's.
+      await api("/searches/" + id, { method: "DELETE" });
+    }
+    await loadSearches();
+  } catch (e) {
+    jobsErr(String(e.message || e));
+    $("search-status").textContent = "";
+  } finally {
+    ev.target.disabled = false;
+  }
+});
+
+// What the employer did. Recorded by you — nothing here is inferred except silence.
+const OUTCOMES = [
+  ["replied", "They replied"],
+  ["screening", "Screening"],
+  ["interviewed", "Interviewed"],
+  ["offer", "Offer"],
+  ["rejected", "Rejected"],
+  ["withdrawn", "I withdrew"],
+];
+
+const pct = v => (v === null || v === undefined) ? "—" : Math.round(v * 100) + "%";
+
+function statRow(row) {
+  // A rate from three applications is not a rate. Saying so beats showing a number that
+  // invites a decision the data cannot support.
+  const rate = row.enough_to_judge
+    ? "<b>" + pct(row.reply_rate) + "</b>"
+    : '<span class="muted" title="Too few to judge">' + pct(row.reply_rate) + "</span>";
+  return "<tr><td>" + esc(row.group) + "</td>"
+    + '<td class="conf">' + row.sent + "</td>"
+    + "<td>" + rate + "</td>"
+    + '<td class="conf">' + row.interviewed + "</td>"
+    + '<td class="conf">' + row.offers + "</td>"
+    + '<td class="conf">' + (row.median_reply_days === null ? "—" : row.median_reply_days + "d")
+    + "</td></tr>";
+}
+
+function statTable(title, rows) {
+  if (!rows.length) return "";
+  return '<h3 style="font-size:.78rem;margin:1rem 0 .3rem;color:var(--muted);'
+    + 'text-transform:uppercase;letter-spacing:.04em">' + esc(title) + "</h3>"
+    + "<table><thead><tr><th></th><th>Sent</th><th>Replied</th><th>Interview</th>"
+    + "<th>Offer</th><th>Median</th></tr></thead><tbody>"
+    + rows.map(statRow).join("") + "</tbody></table>";
+}
+
+async function loadStats() {
+  let s;
+  try { s = await api("/jobs/stats/outcomes"); } catch (e) { return; }
+
+  if (!s.overall.sent) {
+    $("stats").innerHTML = '<p class="muted">Nothing sent yet. Once an application goes '
+      + "out, record what came back and this will tell you what is working.</p>";
+    return;
+  }
+
+  const o = s.overall;
+  const caveat = s.enough_to_judge ? ""
+    : '<p class="muted" style="font-size:.78rem;margin:.4rem 0 0">Fewer than '
+      + s.min_for_a_rate + " applications — these rates are not yet worth reading.</p>";
+
+  $("stats").innerHTML =
+    "<dl>"
+    + "<div><dt>Sent</dt><dd>" + o.sent + "</dd></div>"
+    + "<div><dt>Heard back</dt><dd>" + o.heard_back + " (" + pct(o.reply_rate) + ")</dd></div>"
+    + "<div><dt>Interviews</dt><dd>" + o.interviewed + "</dd></div>"
+    + "<div><dt>Offers</dt><dd>" + o.offers + "</dd></div>"
+    + "<div><dt>Median reply</dt><dd>"
+    + (o.median_reply_days === null ? "—" : o.median_reply_days + " days") + "</dd></div>"
+    + "<div><dt>No answer</dt><dd>" + o.ghosted + "</dd></div>"
+    + "</dl>" + caveat
+    // The comparison the whole thing exists for.
+    + statTable("Does a better match get replies?", s.by_match_score)
+    + statTable("By board", s.by_source)
+    + statTable("By company", s.by_company);
+}
+
 async function loadJobs() {
   let data;
   try { data = await api("/jobs"); } catch (e) { jobsErr(String(e.message || e)); return; }
   jobsErr("");
+  loadStats();
 
   $("jobs-table").innerHTML = data.total
     ? "<table><thead><tr><th>Role</th><th>State</th><th>Match</th><th>Docs</th>"
@@ -606,6 +891,23 @@ $("b-add-job").onclick = async () => {
   }
 };
 
+$("jobs-table").addEventListener("change", async ev => {
+  const id = ev.target.dataset.outcome;
+  if (!id || !ev.target.value) return;
+
+  ev.target.disabled = true;
+  jobsErr("");
+  try {
+    await api("/jobs/" + id + "/outcome",
+      { method: "POST", body: JSON.stringify({ kind: ev.target.value }) });
+    await loadJobs();
+  } catch (e) {
+    jobsErr(String(e.message || e));
+  } finally {
+    ev.target.disabled = false;
+  }
+});
+
 $("jobs-table").addEventListener("click", async ev => {
   const id = ev.target.dataset.job;
   const act = ev.target.dataset.act;
@@ -661,7 +963,8 @@ $("jobs-table").addEventListener("click", async ev => {
 // exactly two outcomes -- adding a third tab to it would have shown two views at once.
 const VIEWS = {
   mission: { el: () => document.querySelector("main"), display: "grid" },
-  jobs:    { el: () => $("jobs-view"), display: "grid", onShow: () => loadJobs() },
+  jobs:    { el: () => $("jobs-view"), display: "grid",
+             onShow: () => { loadBoards(); loadSearches(); loadJobs(); } },
   profile: { el: () => $("profile-view"), display: "grid",
              onShow: () => { loadProfile(); loadGenerated(); } },
 };

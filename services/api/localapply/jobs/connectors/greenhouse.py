@@ -29,7 +29,9 @@ class GreenhouseConnector:
         return f"https://boards-api.greenhouse.io/v1/boards/{handle}/jobs?content=true"
 
     def parse(self, payload: object, handle: str) -> list[Posting]:
-        jobs = (payload or {}).get("jobs", []) if isinstance(payload, dict) else []
+        # `.get("jobs", [])` is not enough: a board answering {"jobs": null} returns
+        # None, not the default, and a sweep across four boards ends on the one that did.
+        jobs = (payload.get("jobs") or []) if isinstance(payload, dict) else []
         postings = []
         for job in jobs:
             if not isinstance(job, dict):

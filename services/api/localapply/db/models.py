@@ -197,6 +197,32 @@ class Job(SQLModel, table=True):
     discovered_at: datetime = Field(default_factory=utc_now, sa_column=_ts_column())
 
 
+class ApplicationOutcome(SQLModel, table=True):
+    """What happened after you applied.
+
+    Deliberately **not** a state. `applications.state` has exactly two writers and describes
+    what the *agent* did; an outcome describes what the *employer* did, arrives days or weeks
+    later, and is not something the machine can validate. Folding the two together would put
+    a third writer on the column and make "submitted" mean two different things.
+
+    Kept as a history rather than a column, so the shape of a real process survives: applied,
+    heard back nine days later, screened, interviewed twice, rejected. A single "status"
+    field answers none of the questions worth asking.
+    """
+
+    __tablename__ = "application_outcomes"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    application_id: UUID = Field(foreign_key="applications.id", index=True)
+    #: See jobs.outcomes.OutcomeKind.
+    kind: str = Field(index=True)
+    note: str = ""
+    #: When it happened, which is not when it was typed in. Someone recording last week's
+    #: rejection today would otherwise make every response time a lie.
+    occurred_at: datetime = Field(default_factory=utc_now, sa_column=_ts_column())
+    recorded_at: datetime = Field(default_factory=utc_now, sa_column=_ts_column())
+
+
 class Application(SQLModel, table=True):
     __tablename__ = "applications"
 

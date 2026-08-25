@@ -51,8 +51,9 @@ def _browser_status(runs, settings: Settings) -> dict:
         problem = None  # no running loop to inspect
 
     return {
-        "ok": problem is None,
-        "sessions": runs.browser.session_count,
+        "ok": problem is None and runs is not None,
+        "error": problem or (None if runs is not None else "no run manager"),
+        "sessions": runs.browser.session_count if runs is not None else 0,
         "max_sessions": settings.max_browser_sessions,
         "headless": settings.headless,
         **({"error": problem} if problem else {}),
@@ -108,11 +109,15 @@ async def health(
     db_ok, db_error = await _database_ok()
     redis_ok, redis_error = await _redis_ok(settings)
 
-    active = [h.snapshot() for h in runs.runs.values() if h.status in {"running", "paused"}]
-    waiting = [h.snapshot() for h in runs.runs.values() if h.status == "waiting_approval"]
+    # A health check that crashes when a subsystem is absent is the least useful thing in
+    # the building: the moment it matters most is exactly the moment something is missing.
+    # No run manager is reported as a missing run manager, not as a 500.
+    handles = list(runs.runs.values()) if runs is not None else []
+    active = [h.snapshot() for h in handles if h.status in {"running", "paused"}]
+    waiting = [h.snapshot() for h in handles if h.status == "waiting_approval"]
 
     return {
-        "status": "ok" if db_ok else "degraded",
+        "status": "ok" if db_ok and runs is not None else "degraded",
         "subsystems": {
             "database": {"ok": db_ok, "error": db_error},
             "redis": {"ok": redis_ok, "error": redis_error},
@@ -124,5 +129,5 @@ async def health(
             # The single most important thing on this page: whether a submit would be real.
             "dry_run": settings.dry_run,
         },
-        "runs": {"active": active, "waiting_approval": waiting, "total": len(runs.runs)},
+        "runs": {"active": active, "waiting_approval": waiting, "total": len(handles)},
     }

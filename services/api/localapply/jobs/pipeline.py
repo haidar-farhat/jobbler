@@ -266,6 +266,7 @@ def job_view(
     documents: list | None = None,
     runs: list | None = None,
     history: list | None = None,
+    outcome: dict | None = None,
     full: bool = False,
 ) -> dict:
     """One serialiser, so every route describes a job the same way.
@@ -301,6 +302,8 @@ def job_view(
         "submitted_at": application.submitted_at.isoformat() if application.submitted_at else None,
         "simulated": application.simulated,
         "untrusted": ["title", "company", "location", "description", "url"],
+        # What the employer did, when the application has actually been sent.
+        "outcome": outcome,
     }
     if not full:
         return view

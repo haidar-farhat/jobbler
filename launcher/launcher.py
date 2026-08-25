@@ -14,6 +14,7 @@ import argparse
 import contextlib
 import json
 import os
+import secrets
 import signal
 import socket
 import subprocess
@@ -178,6 +179,46 @@ def ensure_python(root: Path) -> Path:
         )
     ok(f"Interpreter {dim(str(python))}")
     return python
+
+
+def ensure_token(root: Path) -> str:
+    """Make sure there is an API token, generating one on first run.
+
+    Written to `.env` rather than kept in memory, because the whole point is that it stays
+    the same across restarts -- a token that changes every launch is a token you re-pair
+    your phone with every launch.
+
+    It is not printed. On this machine you never need it (loopback is exempt), and printing a
+    long-lived secret into a scrollback buffer on every start is how it ends up in a
+    screenshot. `--show-token` asks for it deliberately.
+    """
+    env_file = root / ".env"
+    existing = ""
+    lines: list[str] = []
+    if env_file.is_file():
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+        for line in lines:
+            if line.strip().startswith("LA_API_TOKEN="):
+                existing = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+
+    if existing:
+        ok("API token in place")
+        return existing
+
+    token = secrets.token_urlsafe(32)
+    block = [
+        "",
+        "# Generated on first run. Requests from this machine never need it; anything else",
+        "# does -- a phone, another laptop, a tunnel. Keep it secret, and see it again with",
+        "#   LocalApply.exe --show-token",
+        f"LA_API_TOKEN={token}",
+    ]
+    env_file.write_text(
+        "\n".join([*lines, *block]).lstrip("\n") + "\n", encoding="utf-8"
+    )
+    ok(f"API token generated and saved to {dim(str(env_file))}")
+    return token
 
 
 def ensure_schema(root: Path, python: Path) -> None:
@@ -416,6 +457,8 @@ def main() -> int:
                              "next free port when the default is taken.")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser.")
     parser.add_argument("--no-seed", action="store_true", help="Skip the profile seed check.")
+    parser.add_argument("--show-token", action="store_true",
+                        help="Print the API token and exit. Needed to pair a phone.")
     args = parser.parse_args()
 
     print(cyan("\n  LocalApply") + dim("  -  local-first job-application workstation\n"))
@@ -423,7 +466,7 @@ def main() -> int:
     root = find_repo_root()
     print(dim(f"  {root}"))
 
-    total = 6 if args.no_seed else 7
+    total = 7 if args.no_seed else 8
     n = 1
 
     step(n, total, "Docker")
@@ -436,6 +479,16 @@ def main() -> int:
 
     step(n, total, "Python environment")
     python = ensure_python(root)
+    n += 1
+
+    step(n, total, "Access")
+    token = ensure_token(root)
+    if args.show_token:
+        print()
+        print(f"  {cyan('Token')}  {token}")
+        print(dim("  Requests from this machine do not need it. Anything else does."))
+        print()
+        return 0
     n += 1
 
     step(n, total, "Database schema")

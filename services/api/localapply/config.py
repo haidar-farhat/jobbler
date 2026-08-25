@@ -41,6 +41,33 @@ class Settings(BaseSettings):
     browser_timeout_ms: int = 15_000
     max_browser_sessions: int = 3
 
+    # --- Access ---
+    #: Generated on first run and written to .env. Empty disables the gate entirely, which
+    #: is only sane while nothing but this machine can reach the API.
+    api_token: str = ""
+    #: Off by default: requiring a token to use the app on the machine it runs on means a
+    #: login screen for a local dashboard, and people turn those off. The launcher turns it
+    #: ON automatically whenever the API binds to anything but loopback.
+    require_token_on_loopback: bool = False
+    #: What the API binds to. Loopback only, until something deliberately changes it -- a
+    #: local-first app has no business listening on 0.0.0.0 by default.
+    bind_host: str = "127.0.0.1"
+
+    # --- Telling you something is waiting ---
+    #: A native toast on this machine. Free, no account, works offline.
+    notify_desktop: bool = True
+    #: An ntfy topic, for reaching a phone. No account and no API key -- which also means
+    #: anyone who knows the topic can read your notifications, so make it long and random
+    #: and never put a value in a notification.
+    notify_ntfy_topic: str = ""
+    notify_ntfy_url: str = "https://ntfy.sh"
+    #: low | normal | high. "high" means approvals only, which is what most people want
+    #: after the first week.
+    notify_minimum_urgency: str = "normal"
+    #: What a notification links to. Set this to your tunnel address once remote access is
+    #: set up, so tapping the notification opens the approval rather than a dead link.
+    public_url: str = ""
+
     # --- Reading job postings ---
     #: Minimum gap between two fetches of the same host. The first throttling of any kind in
     #: this package, and the reason it exists is the stated posture: a tool that reads other
