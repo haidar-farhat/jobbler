@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from localapply.contracts import ElementRole
+from localapply.contracts import ElementRole, ObservedElement
 from localapply.policy.field_classifier import FieldClass, classify
 
 NEVER = [
@@ -87,3 +87,87 @@ def test_password_input_type_is_never_regardless_of_label(make_element):
 def test_unidentified_textarea_is_review(make_element):
     result = classify(make_element(name="Additional notes", role=ElementRole.TEXTAREA))
     assert result.field_class is FieldClass.REVIEW_REQUIRED
+
+
+# --------------------------------------------------------------------------------------
+# What a real board actually looks like
+#
+# Every test above this line uses a label we invented. Running the observer against real
+# Greenhouse, Lever and Ashby pages turned up two ways the classifier said SAFE_AUTOFILL
+# about something it should not have -- and SAFE_AUTOFILL is the only class that authorises
+# acting without a human, so it is the only one where being wrong costs anything.
+# --------------------------------------------------------------------------------------
+
+
+def element(name: str, role: ElementRole = ElementRole.TEXTBOX, **kw) -> ObservedElement:
+    return ObservedElement(ref="e1", role=role, name=name, **kw)
+
+
+def test_a_job_listing_link_is_not_a_city_field():
+    """Verified on job-boards.greenhouse.io/vercel: this exact string classified as
+    SAFE_AUTOFILL with profile_key=city, because the location contains the word."""
+    result = classify(
+        element("Director, Major Sales\nHybrid - New York City", ElementRole.LINK)
+    )
+    assert result.field_class is FieldClass.REVIEW_REQUIRED
+
+
+def test_a_question_containing_a_safe_word_is_not_a_safe_field():
+    """The version that would actually matter: on a form, this would have been filled with
+    the candidate's home city and nobody would have been asked."""
+    result = classify(
+        element(
+            "Which office would you like to work from? (New York City, London, Berlin)",
+            ElementRole.COMBOBOX,
+        )
+    )
+    assert result.field_class is FieldClass.REVIEW_REQUIRED
+
+
+@pytest.mark.parametrize(
+    "role", [ElementRole.LINK, ElementRole.BUTTON, ElementRole.HEADING, ElementRole.OTHER]
+)
+def test_only_something_you_can_type_into_is_ever_safe(role):
+    """A link cannot be filled, so "safe to fill automatically" is meaningless about one."""
+    assert classify(element("Email", role)).field_class is not FieldClass.SAFE_AUTOFILL
+
+
+@pytest.mark.parametrize(
+    "role",
+    [ElementRole.TEXTBOX, ElementRole.COMBOBOX, ElementRole.FILE_INPUT, ElementRole.CHECKBOX],
+)
+def test_a_real_field_is_still_classified(role):
+    assert classify(element("Email address", role)).field_class is FieldClass.SAFE_AUTOFILL
+
+
+def test_a_label_wrapped_across_two_lines_is_still_a_label():
+    """Markup breaks labels across lines all the time. Treating that as page text would send
+    an ordinary field to a human for approval."""
+    result = classify(element("First\n  name"))
+    assert result.field_class is FieldClass.SAFE_AUTOFILL
+    assert result.profile_key == "first_name"
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["City", "City / Town", "Current city of residence", "Postal code", "Resume/CV",
+     "E-mail", "LinkedIn Profile", "Phone number"],
+)
+def test_ordinary_labels_are_unaffected(label):
+    assert classify(element(label)).field_class is FieldClass.SAFE_AUTOFILL
+
+
+def test_the_length_rule_never_makes_something_safe_that_was_not():
+    """The asymmetry the whole fix rests on: failing the label check can only ever move a
+    field towards asking a human, never away from it."""
+    long_and_dangerous = (
+        "By typing your full legal name below you provide your electronic signature and "
+        "consent to the terms of this application"
+    )
+    assert classify(element(long_and_dangerous)).field_class is FieldClass.NEVER_AUTOFILL
+
+    long_and_reviewable = (
+        "Please describe why you are interested in this role and what salary you would "
+        "expect for it"
+    )
+    assert classify(element(long_and_reviewable)).field_class is FieldClass.REVIEW_REQUIRED

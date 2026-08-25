@@ -97,13 +97,66 @@ SAFE_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
 ]
 
 
+#: Roles a value can actually be put into. Everything else -- a link, a button, a heading --
+#: cannot be filled, so calling it "safe to autofill" is meaningless at best.
+FILLABLE: frozenset[ElementRole] = frozenset({
+    ElementRole.TEXTBOX,
+    ElementRole.TEXTAREA,
+    ElementRole.COMBOBOX,
+    ElementRole.CHECKBOX,
+    ElementRole.RADIO,
+    ElementRole.FILE_INPUT,
+})
+
+#: Every label a SAFE pattern can match is short -- "First name", "Email", "Postal code",
+#: "Current city of residence" is 25. Forty is roomy for all of them and excludes the
+#: sentences that caused the trouble: "Which office would you like to work from? (New York
+#: City, London, Berlin)" is 72.
+MAX_LABEL_CHARS = 40
+
+#: A label is a noun phrase. Past this it is a question or a sentence, and the thing it
+#: happens to contain is not what the field is for.
+MAX_LABEL_WORDS = 7
+
+
+def _looks_like_a_label(name: str) -> bool:
+    """Is this a field's label, or a sentence that happens to contain the word?
+
+    Observed on a real Greenhouse board: a link reading "Director, Major Sales / Hybrid -
+    New York City" matched `\\bcity\\b` and classified as SAFE_AUTOFILL with
+    `profile_key=city`. On a listing page that is merely wrong. On a form it is the failure
+    that matters -- a select labelled "Which office would you like to work from? (New York
+    City, London, Berlin)" would have been filled with the candidate's home city, without
+    anyone approving it.
+
+    Whitespace is collapsed rather than rejected: a label broken across two lines in the
+    markup is still a label, and treating "First\\nname" as page text would send a perfectly
+    ordinary field to a human for approval.
+
+    The asymmetry is deliberate and load-bearing: failing this check disqualifies a string
+    from SAFE_AUTOFILL only. NEVER and REVIEW still apply to it, because erring towards
+    asking a person is always allowed and erring towards filling automatically is not.
+    """
+    collapsed = " ".join((name or "").split())
+    return (
+        bool(collapsed)
+        and len(collapsed) <= MAX_LABEL_CHARS
+        and len(collapsed.split()) <= MAX_LABEL_WORDS
+    )
+
+
 def classify(element: ObservedElement) -> Classification:
     """Classify a single observed form element.
 
     Matching runs NEVER -> REVIEW -> SAFE, so the most restrictive class always wins when a
     label matches more than one pattern (e.g. "Salary expectation signature").
     """
-    haystack = " ".join(filter(None, [element.name, element.input_type, element.value or ""]))
+    # Whitespace-collapsed, so a label broken across two lines in the markup matches the
+    # same patterns as one that is not.
+    haystack = " ".join(
+        " ".join(part.split())
+        for part in filter(None, [element.name, element.input_type, element.value or ""])
+    )
 
     for pattern, label in NEVER_PATTERNS:
         if pattern.search(haystack):
@@ -117,9 +170,13 @@ def classify(element: ObservedElement) -> Classification:
         if pattern.search(haystack):
             return Classification(FieldClass.REVIEW_REQUIRED, label)
 
-    for pattern, label, profile_key in SAFE_PATTERNS:
-        if pattern.search(haystack):
-            return Classification(FieldClass.SAFE_AUTOFILL, label, profile_key)
+    # SAFE is the only class that authorises acting without a human, so it is the only one
+    # with entry conditions: the element must be something a value can go into, and its name
+    # must read as a label rather than as page text.
+    if element.role in FILLABLE and _looks_like_a_label(element.name):
+        for pattern, label, profile_key in SAFE_PATTERNS:
+            if pattern.search(haystack):
+                return Classification(FieldClass.SAFE_AUTOFILL, label, profile_key)
 
     # Free-text areas are open-ended by nature; never autofill one we could not identify.
     if element.role is ElementRole.TEXTAREA:
