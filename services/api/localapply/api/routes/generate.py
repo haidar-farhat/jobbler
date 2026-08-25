@@ -134,6 +134,20 @@ async def generate(
             notes = report.notes
             write_report = report.as_dict()
             generator_name = "agentic"
+        elif payload.kind == "cover_letter":
+            from ...documents.writer import write_cover_letter
+
+            plan, report = await write_cover_letter(
+                facts,
+                job_title=payload.job_title,
+                company=payload.company,
+                description=payload.description,
+                router=router,
+                base_plan=plan,
+            )
+            notes = report.notes
+            write_report = report.as_dict()
+            generator_name = "agentic"
         else:
             from ...documents.llm_writer import polish as polish_plan
 

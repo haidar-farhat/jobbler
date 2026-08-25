@@ -188,8 +188,13 @@ async def test_an_invented_summary_is_thrown_away(facts, router, provider):
     provider.replies = ["Kubernetes expert who led a team of 40 engineers across three offices."]
     plan, report = await write(facts, router)
 
+    # The rejected text is gone. What remains is the summary the rule-based generator
+    # composed from facts -- the floor a rejected rewrite falls back to, not a placeholder.
     summary = next((s for s in plan.sections if s.heading == "Summary"), None)
-    assert summary is None, "an unsupported summary must not reach the document"
+    assert summary is not None
+    text = summary.items[0].text
+    assert "Kubernetes" not in text, "an unsupported summary must not reach the document"
+    assert "40 engineers" not in text
     assert report.rejected
     assert any("Kubernetes" in r for r in report.rejected)
 

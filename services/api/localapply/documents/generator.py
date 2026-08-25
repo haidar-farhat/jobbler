@@ -21,7 +21,9 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from ..profile.facts import FactCategory, FactStatus
+from . import prose
 from .matching import MatchResult, extract_requirements, match, order_skills, rank_experience
+from .retrieval import select_bullets
 
 # One page is the brief. A recruiter spends seconds on a CV, and an ATS does not reward
 # length -- so the document is budgeted rather than allowed to grow with the profile. These
@@ -32,6 +34,15 @@ MAX_BULLETS_PER_ROLE = 2
 MAX_EDUCATION = 3
 MAX_PROJECTS = 2
 MAX_CERTIFICATIONS = 3
+#: A summary naming eight technologies is a keyword list with a full stop on the end.
+MAX_SUMMARY_SKILLS = 4
+
+# A cover letter is read in under a minute and is a *letter*, not a second CV. Two roles
+# with two bullets each is as much evidence as one page of prose can carry before a reader
+# starts skimming -- which is the point at which it stops being read at all.
+MAX_LETTER_ROLES = 2
+MAX_LETTER_BULLETS = 2
+MAX_LETTER_SKILLS = 5
 
 
 def _trim_detail(fact) -> dict:
@@ -201,6 +212,11 @@ class DocumentGenerator:
         Selection and ordering only. No fact's wording changes, and nothing is added that
         the master CV does not already contain -- so a tailored CV can never claim more than
         the canonical one.
+
+        Three separate decisions, each made where it belongs: relevance chooses *which*
+        roles and bullets appear, chronology decides the order they appear in, and the page
+        budget decides how many. Conflating the first two is what put a job that ended in
+        2023 above the one still held.
         """
         facts = _accepted(facts)
         skills = _by_category(facts, FactCategory.SKILL.value)
@@ -224,6 +240,12 @@ class DocumentGenerator:
         by_name = {f.value.casefold(): f for f in curated}
         experiences = _by_category(facts, FactCategory.EXPERIENCE.value)
 
+        featured = prose.chronological(
+            rank_experience(experiences, result.matched)[:MAX_ROLES]
+        )
+        matched_lower = {s.casefold() for s in result.matched}
+        matched_skills = [f.value for f in curated if f.value.casefold() in matched_lower]
+
         for section in plan.sections:
             if section.heading == "Skills":
                 section.items = [
@@ -233,9 +255,35 @@ class DocumentGenerator:
                 ]
             elif section.heading == "Experience":
                 section.items = [
-                    DocumentItem(f.value, [f.id], getattr(f, "detail", {}) or {})
-                    for f in rank_experience(experiences, result.matched)
+                    DocumentItem(
+                        f.value,
+                        [f.id],
+                        # Which bullets, not the first two the CV happened to list.
+                        {**(getattr(f, "detail", None) or {}),
+                         "bullets": select_bullets(f, description, MAX_BULLETS_PER_ROLE)},
+                    )
+                    for f in featured
                 ]
+
+        # The summary. A CV generated without a model had none at all, and it is the first
+        # thing a recruiter reads. `write_tailored_cv` replaces this one when a model is
+        # available; this is the floor, not a placeholder.
+        summary = prose.profile_summary(
+            plan.contact.get("current_title", ""),
+            matched_skills[:MAX_SUMMARY_SKILLS],
+            featured[0] if featured else None,
+            job_title,
+        )
+        summary_ids = [f.id for f in curated if f.value in matched_skills[:MAX_SUMMARY_SKILLS]]
+        summary_ids += [f.id for f in featured[:1]]
+        title_fact = _first(facts, "current_title")
+        if title_fact is not None:
+            summary_ids.append(title_fact.id)
+        if summary and summary_ids:
+            insert_at = 1 if plan.sections and plan.sections[0].heading == "Contact" else 0
+            plan.sections.insert(
+                insert_at, DocumentSection("Summary", [DocumentItem(summary, summary_ids)])
+            )
 
         return plan
 
@@ -249,10 +297,14 @@ class DocumentGenerator:
     ) -> DocumentPlan:
         """A letter assembled from accepted facts.
 
-        Composed from sentence forms filled with facts, so it cannot claim a skill or a role
-        you have not accepted. It reads plainly rather than eloquently -- that is the honest
-        trade for not being able to invent. A model-backed writer lands in Phase 4 and will
-        pass through `assert_grounded` unchanged.
+        Every paragraph is *composed* from the structured parts of a fact rather than
+        printed from it -- see documents/prose.py for why that distinction is the whole
+        difference between a letter and a list of rows. It cannot claim a skill or a role
+        you have not accepted, because only facts fill the sentence forms.
+
+        It reads plainly rather than eloquently: that is the honest trade for not being
+        able to invent. `writer.write_cover_letter` hands these paragraphs to a model to
+        rewrite, with a claim check on every line that comes back.
         """
         facts = _accepted(facts)
         contact, contact_ids = _contact(facts)
@@ -264,7 +316,6 @@ class DocumentGenerator:
         matched_lower = {s.casefold() for s in result.matched}
         matched_facts = [f for f in skills if f.value.casefold() in matched_lower]
 
-        where = f" at {company}" if company else ""
         plan = DocumentPlan(
             kind="cover_letter",
             title=f"Application for {job_title}",
@@ -279,41 +330,65 @@ class DocumentGenerator:
         name_fact = _first(facts, "full_name")
         title_fact = _first(facts, "current_title")
         opening_ids = [f.id for f in (name_fact, title_fact) if f is not None]
+        opening_ids += [f.id for f in matched_facts[:MAX_LETTER_SKILLS]]
+        # An opening sentence is mostly the job title *you* typed, so it needs something of
+        # yours behind it to be a grounded line at all. Falling back to the contact facts
+        # covers a profile with an email but no name, title or matching skill; a profile
+        # with nothing gets no opening, and the empty-letter refusal below catches it.
+        opening_ids = opening_ids or contact_ids
         if opening_ids:
-            role = f", currently working as {title_fact.value}" if title_fact else ""
             body.items.append(
                 DocumentItem(
-                    f"I am writing to apply for the {job_title} position{where}. "
-                    f"I am {name_fact.value}{role}." if name_fact
-                    else f"I am writing to apply for the {job_title} position{where}.",
+                    prose.opening_paragraph(
+                        job_title,
+                        company,
+                        title_fact.value if title_fact else "",
+                        [f.value for f in matched_facts[:MAX_LETTER_SKILLS]],
+                    ),
                     opening_ids,
                 )
             )
 
-        if matched_facts:
-            listed = ", ".join(f.value for f in matched_facts[:8])
+        # The evidence. One paragraph per role, written as prose, with the bullets that
+        # answer this posting -- not the first two the CV happened to list.
+        #
+        # Relevance picks *which* roles; a current one is then written first. Leading with
+        # a job that ended two years ago and following it with the one still held reads as
+        # a chronology error even when the ranking behind it is right.
+        featured = prose.chronological(
+            rank_experience(experiences, result.matched)[:MAX_LETTER_ROLES]
+        )
+        for entry in featured:
+            chosen = select_bullets(entry, description, limit=MAX_LETTER_BULLETS)
             body.items.append(
                 DocumentItem(
-                    f"The role asks for {listed}, which are among the skills I work with.",
-                    [f.id for f in matched_facts[:8]],
+                    prose.experience_paragraph(entry, chosen),
+                    [entry.id],
+                    getattr(entry, "detail", {}) or {},
                 )
             )
 
-        for entry in rank_experience(experiences, result.matched)[:2]:
+        # Fit last, so the letter leads with what was done rather than with a keyword list.
+        fit = prose.fit_paragraph(
+            [f.value for f in matched_facts[:MAX_LETTER_SKILLS]],
+            result.missing_required[:2],
+        )
+        if fit and matched_facts:
             body.items.append(
-                DocumentItem(entry.value, [entry.id], getattr(entry, "detail", {}) or {})
+                DocumentItem(fit, [f.id for f in matched_facts[:MAX_LETTER_SKILLS]])
             )
 
         if contact_ids:
             body.items.append(
                 DocumentItem(
-                    "I would welcome the chance to discuss the role. "
-                    + (f"You can reach me at {contact['email']}."
-                       if "email" in contact else ""),
+                    prose.closing_paragraph(
+                        contact.get("email", ""), contact.get("phone", "")
+                    ),
                     contact_ids,
                 )
             )
 
+        body.items = [item for item in body.items if item.text.strip()]
         plan.sections.append(body)
 
         # A letter with nothing behind it is worse than no letter.

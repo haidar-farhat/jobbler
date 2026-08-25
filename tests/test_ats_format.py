@@ -215,6 +215,94 @@ def test_role_employer_and_dates_are_on_one_text_line(cv):
     assert "2023 - Present" in text
 
 
+# --------------------------------------------------------------------------------------
+# What a reader reads first, and in what order
+#
+# A CV generated without a model had no summary at all -- the one section a recruiter reads
+# before deciding whether to read the rest -- and ordered roles by keyword relevance, which
+# puts a job that ended two years ago above the one still held.
+# --------------------------------------------------------------------------------------
+
+
+def older_and_newer():
+    return [
+        Fact("full_name", "Haydar Farhat", FactCategory.IDENTITY.value),
+        Fact("current_title", "AI Engineer", FactCategory.IDENTITY.value),
+        Fact("email", "h@example.com", FactCategory.IDENTITY.value),
+        Fact("Python", "Python", FactCategory.SKILL.value),
+        Fact("Docker", "Docker", FactCategory.SKILL.value),
+        Fact(
+            "Support Engineer — Helpdesk", "Support Engineer — Helpdesk",
+            FactCategory.EXPERIENCE.value,
+            {"role": "Support Engineer", "organisation": "Helpdesk", "dates": "2019 - 2021",
+             "bullets": ["Automated ticket triage with Python and Docker."]},
+        ),
+        Fact(
+            "Full-Stack Developer — Carepool", "Full-Stack Developer — Carepool",
+            FactCategory.EXPERIENCE.value,
+            {"role": "Full-Stack Developer", "organisation": "Carepool",
+             "dates": "2023 - Present",
+             "bullets": ["Shipped the billing service.", "Ran the deploy pipeline.",
+                         "Answered support escalations."]},
+        ),
+    ]
+
+
+@pytest.fixture
+def two_roles_cv():
+    return render_html(
+        DocumentGenerator().tailored_cv(
+            older_and_newer(), job_title="AI Engineer", company="Northwind", description=JOB
+        )
+    )
+
+
+def test_a_cv_has_a_summary_without_needing_a_model(cv):
+    headings = [h.strip().upper() for h in re.findall(r"<h2>(.*?)</h2>", cv, re.DOTALL)]
+    assert "SUMMARY" in headings
+    assert headings.index("SUMMARY") == 0, "the summary is the first thing on the page"
+
+    body = body_of(cv)
+    assert "AI Engineer working across" in body
+    assert "Currently a Full-Stack Developer at Carepool" in body
+
+
+def test_the_summary_names_the_matched_skills_not_all_of_them(cv):
+    summary = re.search(r"<h2>Summary</h2>\s*<p[^>]*>(.*?)</p>", cv, re.DOTALL).group(1)
+    assert "Python" in summary
+    # "OOP" is filtered as not-a-skill; a phrase fact is not a technology.
+    assert "OOP" not in summary
+    assert "Python-based AI workflows" not in summary
+
+
+def test_roles_appear_in_reverse_chronological_order(two_roles_cv):
+    """Relevance chooses which roles appear; the dates decide the order. Helpdesk matches
+    both requested skills and would otherwise be printed above the current job."""
+    # Scoped to the entries: the summary also names the current employer, and matching on
+    # the whole body would pass on that alone.
+    entries = re.findall(r'<div class="entry">(.*?)</div>', two_roles_cv, re.DOTALL)
+    employers = [e.split("</span>, ", 1)[1].split("<", 1)[0] for e in entries]
+    assert employers == ["Carepool", "Helpdesk"]
+
+
+def test_a_tailored_cv_keeps_to_the_page_budget(two_roles_cv):
+    """The tailored CV replaced the master CV's trimmed entries with untrimmed ones, so a
+    role with eight bullets printed all eight and the one-page brief quietly lapsed."""
+    from localapply.documents.generator import MAX_BULLETS_PER_ROLE
+
+    entries = re.findall(r'<div class="entry">(.*?)</div>', two_roles_cv, re.DOTALL)
+    assert entries
+    for entry in entries:
+        assert entry.count("<li>") <= MAX_BULLETS_PER_ROLE, entry
+
+
+def test_bullets_are_chosen_for_the_job_not_taken_in_order(two_roles_cv):
+    """"Ran the deploy pipeline" answers a Docker posting; "Answered support escalations"
+    is what a positional cut would have kept."""
+    body = body_of(two_roles_cv)
+    assert "Answered support escalations" not in body
+
+
 def test_bullets_are_separate_from_the_headline(cv):
     head = re.search(r'<p class="entry-head">(.*?)</p>', cv, re.DOTALL).group(1)
     assert "Engineered backend services" not in head, (

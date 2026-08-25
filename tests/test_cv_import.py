@@ -312,7 +312,7 @@ def test_experience_bullets_are_kept_separate(extraction):
 def test_employment_type_noise_is_dropped():
     from localapply.documents.cv_parser import _split_headline
 
-    role, org, dates = _split_headline("•Full-Stack Developer, Carepool Full-time | 1 Year")
+    role, org, _dates = _split_headline("•Full-Stack Developer, Carepool Full-time | 1 Year")
     assert role == "Full-Stack Developer"
     assert "Full-time" not in org
     assert org.startswith("Carepool")

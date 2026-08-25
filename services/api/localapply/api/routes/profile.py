@@ -20,7 +20,7 @@ from ...config import Settings
 from ...db import models as m
 from ...db.models import utc_now
 from ...db.session import get_session
-from ...profile.facts import USABLE_STATUSES, FactStatus
+from ...profile.facts import USABLE_STATUSES, FactSource, FactStatus
 from ..deps import get_app_settings
 
 router = APIRouter(prefix="/profile", tags=["profile"])
@@ -145,6 +145,69 @@ async def reject_fact(fact_id: UUID, session: AsyncSession = Depends(get_session
         raise HTTPException(404, "No such fact.")
     fact.status = FactStatus.REJECTED.value
     fact.resolved_at = utc_now()
+    session.add(fact)
+    await session.commit()
+    return fact.model_dump(mode="json")
+
+
+class FactEdit(BaseModel):
+    """A correction to one fact. Every field is optional; only what you send changes."""
+
+    value: str | None = None
+    #: Structured parts of an entry -- role, organisation, dates, bullets, title, stack.
+    #: Sent whole, because a bullet list is edited as a list.
+    detail: dict | None = None
+
+
+@router.patch("/facts/{fact_id}")
+async def edit_fact(
+    fact_id: UUID, payload: FactEdit, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Correct a fact.
+
+    The parser reads arbitrary PDFs and will never be perfect: a CV that writes its dates as
+    "Full-time | 1 Year" has no date range to find, and a mangled headline stays mangled
+    forever if the only options are accept or reject. Editing is what turns extraction into
+    a *draft* -- and it is the difference between a document assembled from whatever survived
+    parsing and one that is actually correct.
+
+    An edited fact is marked as yours: it is no longer attributable to the import, and a
+    later re-import must not quietly overwrite it.
+    """
+    fact = await session.get(m.ProfileFact, fact_id)
+    if fact is None:
+        raise HTTPException(404, "No such fact.")
+
+    if payload.value is not None:
+        cleaned = " ".join(payload.value.split()).strip()
+        if not cleaned:
+            raise HTTPException(400, "A fact cannot be empty. Reject it instead.")
+        fact.value = cleaned
+
+    if payload.detail is not None:
+        detail = dict(fact.detail or {})
+        for key, raw in payload.detail.items():
+            if key == "bullets":
+                detail["bullets"] = [
+                    " ".join(str(b).split()).strip()
+                    for b in (raw or [])
+                    if str(b).strip()
+                ]
+            else:
+                detail[key] = " ".join(str(raw or "").split()).strip()
+        fact.detail = detail
+
+        # Keep `value` in step with the structured parts, so anything reading the flat value
+        # (matching, the cover letter, the profile table) sees the correction too.
+        role = detail.get("role", "")
+        organisation = detail.get("organisation", "")
+        if role or organisation:
+            headline = " — ".join(p for p in (role, organisation) if p)
+            dates = detail.get("dates", "")
+            fact.value = f"{headline} ({dates})" if dates else headline
+
+    fact.source = FactSource.MANUAL.value
+    fact.confidence = 1.0
     session.add(fact)
     await session.commit()
     return fact.model_dump(mode="json")

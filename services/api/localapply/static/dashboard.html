@@ -196,6 +196,13 @@
   </section>
 
   <section class="span2">
+    <h2>Experience, education &amp; projects — edit before you generate</h2>
+    <div class="body" id="entries">
+      <p class="muted">Nothing yet. Upload a CV.</p>
+    </div>
+  </section>
+
+  <section class="span2">
     <h2>Proposed facts — waiting on you</h2>
     <div class="body" id="proposals"><p class="muted">No proposals. Upload a CV to see some.</p></div>
   </section>
@@ -481,6 +488,8 @@ async function loadProfile() {
           + "<button data-decline=\"" + f.id + "\">Decline</button></td></tr>").join("")
       + "</tbody></table>"
     : '<p class="muted">Nothing waiting. Everything found has been decided on.</p>';
+
+  renderEntries(data.facts);
 }
 
 $("proposals").addEventListener("click", async ev => {
@@ -518,6 +527,119 @@ $("b-upload").onclick = async () => {
     err.style.display = "block";
   }
 };
+
+// --------------------------------------------------------------------------------------
+// Entry editor
+//
+// The parser reads arbitrary PDFs and cannot be perfect. A CV written with "Full-time |
+// 1 Year" has no date range to find, and a mangled headline stayed mangled forever when
+// the only options were accept or reject. Extraction is a draft; this is where it becomes
+// correct.
+// --------------------------------------------------------------------------------------
+
+const ENTRY_CATEGORIES = ["experience", "education", "project", "certification"];
+
+function entryCard(f) {
+  const d = f.detail || {};
+  const isRole = d.role !== undefined || d.organisation !== undefined
+                 || f.category === "experience" || f.category === "education";
+  const bullets = (d.bullets || []).join("\n");
+
+  const field = (label, key, value, width) =>
+    '<label style="flex:' + (width || "1") + ';min-width:8rem;font-size:.7rem;'
+    + 'color:var(--muted)">' + label
+    + '<input data-f="' + f.id + '" data-k="' + key + '" value="' + esc(value || "") + '"></label>';
+
+  return '<div class="card" style="border-color:var(--edge);background:transparent" '
+    + 'data-entry="' + f.id + '">'
+    + '<div style="display:flex;justify-content:space-between;align-items:baseline">'
+    + '<span class="muted" style="font-size:.68rem;text-transform:uppercase;'
+    + 'letter-spacing:.05em">' + esc(f.category)
+    + (f.status !== "accepted" ? " · " + esc(f.status) : "") + '</span>'
+    + '<span class="muted" style="font-size:.65rem">' + esc(f.source) + '</span></div>'
+
+    + '<div class="row" style="margin-top:.4rem">'
+    + (isRole
+        ? field("Role / qualification", "role", d.role, "2")
+          + field("Organisation", "organisation", d.organisation, "2")
+          + field("Dates (e.g. Jan 2023 - Present)", "dates", d.dates, "1.4")
+        : field("Title", "title", d.title || f.value, "2")
+          + field("Stack", "stack", d.stack, "2"))
+    + '</div>'
+
+    + (isRole
+        ? '<label style="display:block;margin-top:.5rem;font-size:.7rem;color:var(--muted)">'
+          + 'Bullet points — one per line'
+          + '<textarea data-f="' + f.id + '" data-k="bullets" rows="3" '
+          + 'style="width:100%;padding:.45rem;margin-top:.25rem;border:1px solid var(--edge);'
+          + 'border-radius:5px;background:var(--surface);color:var(--ink);font:inherit;'
+          + 'font-size:.82rem">' + esc(bullets) + '</textarea></label>'
+        : '<label style="display:block;margin-top:.5rem;font-size:.7rem;color:var(--muted)">'
+          + 'Description'
+          + '<input data-f="' + f.id + '" data-k="description" value="'
+          + esc(d.description || "") + '"></label>')
+
+    + '<div style="display:flex;gap:.5rem;margin-top:.6rem;align-items:center">'
+    + '<button class="ok" data-save="' + f.id + '">Save</button>'
+    + (f.status === "proposed"
+        ? '<button data-accept="' + f.id + '">Accept</button>' : "")
+    + '<button data-decline="' + f.id + '">Remove</button>'
+    + '<span class="muted" data-msg="' + f.id + '" style="font-size:.75rem"></span>'
+    + '</div></div>';
+}
+
+function renderEntries(allFacts) {
+  const entries = allFacts.filter(
+    f => ENTRY_CATEGORIES.includes(f.category) && f.status !== "rejected"
+         && f.status !== "superseded");
+
+  // Never redraw under someone's cursor. Several flows reload the profile -- accepting a
+  // proposal, finishing an upload -- and each one would silently discard whatever was
+  // half-typed in another card.
+  if ($("entries").contains(document.activeElement)) return;
+
+  $("entries").innerHTML = entries.length
+    ? '<p class="muted" style="margin:0 0 .7rem;font-size:.8rem">'
+      + "Fix anything the parser got wrong — especially dates, which most CVs write in a "
+      + "form no parser can read. What you save here is what the CV prints.</p>"
+      + entries.map(entryCard).join("")
+    : '<p class="muted">Nothing yet. Upload a CV.</p>';
+}
+
+$("entries").addEventListener("click", async ev => {
+  const id = ev.target.dataset.save || ev.target.dataset.accept || ev.target.dataset.decline;
+  if (!id) return;
+  const note = document.querySelector('[data-msg="' + id + '"]');
+  ev.target.disabled = true;
+
+  try {
+    if (ev.target.dataset.save) {
+      const detail = {};
+      document.querySelectorAll('[data-f="' + id + '"]').forEach(input => {
+        const key = input.dataset.k;
+        detail[key] = key === "bullets"
+          ? input.value.split("\n").map(s => s.trim()).filter(Boolean)
+          : input.value;
+      });
+      await api("/profile/facts/" + id, {
+        method: "PATCH", body: JSON.stringify({ detail: detail })
+      });
+      // Deliberately no reload: redrawing every card to confirm one save would throw away
+      // edits in progress elsewhere on the page.
+      if (note) note.textContent = "Saved.";
+      return;
+    } else if (ev.target.dataset.accept) {
+      await api("/profile/facts/" + id + "/accept", { method: "POST" });
+    } else {
+      await api("/profile/facts/" + id + "/reject", { method: "POST" });
+    }
+    await loadProfile();
+  } catch (e) {
+    if (note) note.textContent = String(e.message || e);
+  } finally {
+    ev.target.disabled = false;
+  }
+});
 
 // --------------------------------------------------------------------------------------
 // Start over: delete profile data

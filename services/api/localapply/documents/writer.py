@@ -49,13 +49,18 @@ SUMMARY_SYSTEM = """\
 You write the opening summary of a CV: two or three sentences, first person implied, no
 padding.
 
+Sentence one says what the candidate is and what they work in. Sentence two names the
+strongest concrete thing they have actually done. Sentence three, if there is one, says
+what they are looking for.
+
 You are given the candidate's verified facts. Rules, in order of importance:
   * Use ONLY those facts. No technology, employer, figure, or claim that is not in them.
   * No invented seniority, team sizes, or years. If a number is not in the facts, do not
     write a number.
   * No filler. Ban: "passionate", "results-driven", "team player", "proven track record",
-    "dynamic", "synergy", "leverage", "wheelhouse".
+    "dynamic", "synergy", "leverage", "wheelhouse", "seasoned", "extensive experience".
   * Concrete over grand. Name the actual work.
+  * Do not open with "I am" or "A highly". Do not write the candidate's name.
 
 Reply with the summary text only. No heading, no quotes, no preamble.
 """
@@ -63,12 +68,22 @@ Reply with the summary text only. No heading, no quotes, no preamble.
 BULLET_SYSTEM = """\
 You rewrite one CV bullet point so it reads well.
 
-Rules:
+Shape it as: what was achieved, how it was measured, and what was done to get there --
+in that order, and only using parts the source bullet actually contains.
+
+  Source: "Worked on the support search using a retrieval pipeline over 40k documents"
+  Good:   "Cut support search time by building a retrieval pipeline over 40k documents"
+  Bad:    "Cut support search time by 60%, saving the team 15 hours a week"  <- invented
+
+Rules, in order of importance:
   * Say ONLY what the source bullet says. Add no technology, employer, metric, or outcome
     that is not already in it.
-  * Keep every number exactly as written. Never introduce one.
-  * Start with a strong verb. Cut "responsible for", "worked on", "helped with".
-  * One sentence. Under 28 words.
+  * Keep every number exactly as written. NEVER introduce one. If the source has no
+    measure, write the bullet without one -- an invented percentage is a lie on a CV, and
+    a bullet with no number is not a failure.
+  * Start with a past-tense action verb. Cut "responsible for", "worked on", "helped with",
+    "tasked with", "duties included".
+  * One sentence. Under 28 words. No trailing "which allowed the team to..." padding.
 
 Reply with the rewritten bullet only.
 """
@@ -80,6 +95,32 @@ Say briefly what is weak: vague wording, buried relevance, anything that reads a
 If a line states something the source facts do not support, say so first and quote it.
 
 Be specific and short: at most four bullet points. If it is genuinely good, say "good".
+"""
+
+LETTER_SYSTEM = """\
+You rewrite one paragraph of a cover letter so it reads like a person wrote it.
+
+Rules, in order of importance:
+  * Say ONLY what the source paragraph says. No employer, technology, date, figure,
+    responsibility, or outcome that is not already in it.
+  * Never add a number, a duration, or a team size.
+  * Keep it to the same length or shorter. Two or three sentences at most.
+  * Plain professional English. Ban: "passionate", "results-driven", "team player",
+    "proven track record", "dynamic", "synergy", "leverage", "excited to", "thrilled",
+    "I believe I would be a great fit", "perfect candidate".
+  * Do not open with "As a" or "With over". Do not restate the job title you were given.
+  * Keep the tense you were given: a role written in the present is one still held.
+
+Reply with the rewritten paragraph only. No greeting, no sign-off, no quotes.
+"""
+
+LETTER_CRITIQUE_SYSTEM = """\
+You review a draft cover letter against the job posting and the candidate's source facts.
+
+Say briefly what is weak: filler, repetition between paragraphs, claims the facts do not
+support, or a paragraph that says nothing specific. Quote anything unsupported first.
+
+At most four short bullet points. If it is genuinely good, say "good".
 """
 
 
@@ -345,9 +386,15 @@ async def write_tailored_cv(
         plan.match = match
 
     if summary_item is not None:
-        # Directly after the header, where a summary belongs.
-        insert_at = 1 if plan.sections and plan.sections[0].heading == "Contact" else 0
-        plan.sections.insert(insert_at, DocumentSection("Summary", [summary_item]))
+        existing = next((s for s in plan.sections if s.heading == "Summary"), None)
+        if existing is not None:
+            # The deterministic generator already composed one. Replace it rather than
+            # inserting a second Summary heading above it.
+            existing.items = [summary_item]
+        else:
+            # Directly after the header, where a summary belongs.
+            insert_at = 1 if plan.sections and plan.sections[0].heading == "Contact" else 0
+            plan.sections.insert(insert_at, DocumentSection("Summary", [summary_item]))
 
     for section in plan.sections:
         if section.heading == "Experience" and experience_items:
@@ -380,3 +427,95 @@ async def write_tailored_cv(
             "facts do not support; the original wording was kept."
         )
     return plan, report
+
+
+async def write_cover_letter(
+    facts: list,
+    *,
+    job_title: str,
+    company: str | None,
+    description: str,
+    router,
+    base_plan: DocumentPlan,
+) -> tuple[DocumentPlan, WriteReport]:
+    """Rewrite a composed letter, paragraph by paragraph, with a claim check on each.
+
+    The letter arrives from `generator.cover_letter` already *composed* -- real sentences
+    built from the structured parts of facts, not headline rows. That ordering matters: the
+    model is asked to improve prose, which is what a model is good at, and never to turn a
+    database row into a sentence, which it can only do by guessing.
+
+    Every paragraph that comes back is checked against the paragraph that went in. A
+    rewrite that names a technology, a number, or an employer the source did not is thrown
+    away and the composed version kept, so a hallucinating model costs you phrasing and
+    never truth.
+    """
+    writer = AgenticWriter(router)
+    report = WriteReport()
+    accepted = {f.id for f in facts}
+
+    body = next((s for s in base_plan.sections if s.heading == "Letter"), None)
+    if body is None or not body.items:
+        return base_plan, report
+
+    supporting = [f.value for f in facts]
+    context = (
+        f"This is a cover letter for a {job_title} role"
+        + (f" at {company}." if company else ".")
+        + (f"\n\nWhat the posting asks for:\n{description[:900]}" if description else "")
+    )
+
+    rewritten_items: list[DocumentItem] = []
+    for position, item in enumerate(body.items):
+        candidate = await writer._generate(
+            f"{context}\n\nSource paragraph:\n{item.text}\n\nRewrite it.", LETTER_SYSTEM
+        )
+        # Checked against the paragraph itself, not the whole profile: a letter paragraph
+        # may only restate its own source, or "I work in Python" quietly becomes "I lead
+        # the Python team" on the strength of an unrelated accepted fact.
+        text = _supported(candidate, item.text, report, f"letter paragraph {position + 1}")
+        if text:
+            report.rewritten += 1
+        rewritten_items.append(
+            DocumentItem(text=text or item.text, fact_ids=item.fact_ids, detail=item.detail)
+        )
+    body.items = rewritten_items
+
+    # --- critique and one revision of the opening ------------------------------------
+    draft = "\n\n".join(item.text for item in body.items)
+    report.critique = (
+        await writer._generate(
+            f"JOB POSTING:\n{description[:1200]}\n\n"
+            "SOURCE FACTS:\n" + "\n".join(f"  - {s}" for s in supporting[:20]) + "\n\n"
+            f"DRAFT LETTER:\n{draft[:2500]}",
+            LETTER_CRITIQUE_SYSTEM,
+        )
+    ).strip()[:900]
+
+    if report.critique and not report.critique.lower().startswith("good"):
+        first = body.items[0]
+        candidate = await writer._generate(
+            f"{context}\n\nYour draft opening:\n{first.text}\n\n"
+            f"A reviewer said:\n{report.critique}\n\n"
+            "Rewrite the opening paragraph addressing that. Add no new facts.",
+            LETTER_SYSTEM,
+        )
+        revised = _supported(candidate, first.text, report, "revised opening")
+        if revised:
+            body.items[0] = DocumentItem(
+                text=revised, fact_ids=first.fact_ids, detail=first.detail
+            )
+            report.notes.append("Opening paragraph revised after self-critique.")
+
+    report.summary_written = bool(report.rewritten)
+    for item in body.items:
+        unknown = [fid for fid in item.fact_ids if fid not in accepted]
+        if unknown:
+            raise RuntimeError("writer produced a letter paragraph citing unaccepted facts")
+
+    if report.rejected:
+        report.notes.append(
+            f"{len(report.rejected)} model rewrite(s) rejected for claiming something the "
+            "facts do not support; the composed wording was kept."
+        )
+    return base_plan, report

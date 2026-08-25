@@ -311,6 +311,147 @@ async def test_a_real_cv_is_still_accepted(client, profile):
 
 
 # --------------------------------------------------------------------------------------
+# Correcting what the parser got wrong
+#
+# Extraction from arbitrary PDFs is a draft, not an answer. A CV that writes its dates as
+# "Full-time | 1 Year" has no date range for any parser to find, and before this the only
+# options were to accept a wrong fact or reject it and lose the entry entirely.
+# --------------------------------------------------------------------------------------
+
+
+async def experience_fact(client) -> dict:
+    await upload(client)
+    proposed = await facts(FactStatus.PROPOSED.value)
+    entry = next((f for f in proposed if f.category == "experience"), None)
+    assert entry is not None, "the fixture CV should yield at least one experience entry"
+    return {"id": str(entry.id), "row": entry}
+
+
+async def test_editing_a_fact_rewrites_its_structured_detail(client, profile):
+    entry = await experience_fact(client)
+
+    response = await client.patch(
+        f"/profile/facts/{entry['id']}",
+        json={
+            "detail": {
+                "role": "Full-Stack Developer",
+                "organisation": "Carepool",
+                "dates": "Jan 2023 - Present",
+                "bullets": ["  Shipped   the API  ", "", "Cut latency by 40%"],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    detail = response.json()["detail"]
+    assert detail["dates"] == "Jan 2023 - Present"
+    # Whitespace is normalised and blank lines dropped, because the editor is a textarea.
+    assert detail["bullets"] == ["Shipped the API", "Cut latency by 40%"]
+
+
+async def test_editing_keeps_the_flat_value_in_step(client, profile):
+    """`value` is what the profile table, matching and the cover letter read. If it kept
+    the parser's wrong headline after an edit, the correction would only show up on the CV.
+    """
+    entry = await experience_fact(client)
+
+    body = (
+        await client.patch(
+            f"/profile/facts/{entry['id']}",
+            json={
+                "detail": {
+                    "role": "Backend Engineer",
+                    "organisation": "Acme",
+                    "dates": "2024 - 2025",
+                }
+            },
+        )
+    ).json()
+
+    assert "Backend Engineer" in body["value"]
+    assert "Acme" in body["value"]
+    assert "2024 - 2025" in body["value"]
+
+
+async def test_an_edit_marks_the_fact_as_yours(client, profile):
+    entry = await experience_fact(client)
+
+    body = (
+        await client.patch(
+            f"/profile/facts/{entry['id']}", json={"detail": {"role": "Backend Engineer"}}
+        )
+    ).json()
+
+    assert body["source"] == "manual", "an edited fact is no longer the import's claim"
+    assert body["confidence"] == 1.0
+
+
+async def test_editing_only_touches_the_keys_you_send(client, profile):
+    entry = await experience_fact(client)
+    await client.patch(
+        f"/profile/facts/{entry['id']}",
+        json={"detail": {"role": "Backend Engineer", "bullets": ["Kept this one"]}},
+    )
+
+    body = (
+        await client.patch(
+            f"/profile/facts/{entry['id']}", json={"detail": {"dates": "2020 - 2021"}}
+        )
+    ).json()
+
+    assert body["detail"]["bullets"] == ["Kept this one"]
+    assert body["detail"]["role"] == "Backend Engineer"
+
+
+async def test_editing_does_not_accept_the_fact(client, profile):
+    """Correcting a proposal is not the same as approving it."""
+    entry = await experience_fact(client)
+
+    body = (
+        await client.patch(
+            f"/profile/facts/{entry['id']}", json={"detail": {"role": "Backend Engineer"}}
+        )
+    ).json()
+    assert body["status"] == FactStatus.PROPOSED.value
+
+    async with session_factory()() as session:
+        context = await load_reasoning_context(session, "apply")
+    assert body["key"] not in context.profile
+
+
+async def test_an_edited_fact_reaches_the_generator_once_accepted(client, profile):
+    entry = await experience_fact(client)
+    await client.patch(
+        f"/profile/facts/{entry['id']}",
+        json={"detail": {"role": "Backend Engineer", "organisation": "Acme",
+                         "dates": "2024 - 2025", "bullets": ["Cut latency by 40%"]}},
+    )
+    await client.post(f"/profile/facts/{entry['id']}/accept")
+
+    async with session_factory()() as session:
+        row = await session.get(m.ProfileFact, UUID(entry["id"]))
+
+    assert row.status == FactStatus.ACCEPTED.value
+    assert row.detail["dates"] == "2024 - 2025"
+    assert row.detail["bullets"] == ["Cut latency by 40%"]
+
+
+async def test_a_fact_cannot_be_edited_into_nothing(client, profile):
+    entry = await experience_fact(client)
+    response = await client.patch(f"/profile/facts/{entry['id']}", json={"value": "   "})
+
+    assert response.status_code == 400
+    assert "reject" in response.json()["detail"].lower()
+
+
+async def test_editing_an_unknown_fact_is_a_404(client, profile):
+    from uuid import uuid4
+
+    response = await client.patch(f"/profile/facts/{uuid4()}", json={"value": "x"})
+    assert response.status_code == 404
+
+
+# --------------------------------------------------------------------------------------
 # Start over
 # --------------------------------------------------------------------------------------
 

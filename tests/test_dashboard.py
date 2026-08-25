@@ -97,7 +97,63 @@ async def test_generation_buttons_are_bound(page):
     assert bound, "the generate buttons never got their handlers"
 
 
-async def test_the_page_has_no_stray_control_characters():
+SAMPLE_FACTS = """[
+  {"id": "11111111-1111-1111-1111-111111111111", "category": "experience",
+   "status": "proposed", "source": "cv_import", "value": "Dev, Carepool",
+   "detail": {"role": "Full-Stack Developer", "organisation": "Carepool",
+              "dates": "", "bullets": ["Built the API", "Cut latency"]}},
+  {"id": "22222222-2222-2222-2222-222222222222", "category": "skill",
+   "status": "accepted", "source": "cv_import", "value": "Python", "detail": {}},
+  {"id": "33333333-3333-3333-3333-333333333333", "category": "experience",
+   "status": "rejected", "source": "cv_import", "value": "Wrong", "detail": {}}
+]"""
+
+
+async def test_the_entry_editor_renders_editable_fields(page):
+    """The parser cannot read every CV. This is where a wrong date gets fixed, so the
+    fields have to actually be there and hold the parsed values."""
+    view, errors = page
+    await view.evaluate(f"renderEntries({SAMPLE_FACTS})")
+
+    assert await view.query_selector('#entries [data-entry]') is not None
+    role = await view.eval_on_selector(
+        '#entries input[data-k="role"]', "el => el.value"
+    )
+    assert role == "Full-Stack Developer"
+
+    # A CV with no readable date range leaves the field empty rather than dropping it --
+    # an empty box is an invitation to type; a missing one is a dead end.
+    assert await view.query_selector('#entries input[data-k="dates"]') is not None
+
+    bullets = await view.eval_on_selector(
+        '#entries textarea[data-k="bullets"]', "el => el.value"
+    )
+    assert bullets == "Built the API\nCut latency"
+    assert _real_errors(errors) == []
+
+
+async def test_the_entry_editor_shows_only_entries_still_in_play(page):
+    view, _ = page
+    await view.evaluate(f"renderEntries({SAMPLE_FACTS})")
+
+    cards = await view.query_selector_all("#entries [data-entry]")
+    assert len(cards) == 1, "skills and rejected entries do not belong in the entry editor"
+
+    body = await view.eval_on_selector("#entries", "el => el.textContent")
+    assert "Wrong" not in body
+
+
+async def test_a_proposed_entry_can_be_accepted_from_the_editor(page):
+    """Editing then accepting in one place, rather than fixing a fact in one panel and
+    hunting for it in another."""
+    view, _ = page
+    await view.evaluate(f"renderEntries({SAMPLE_FACTS})")
+
+    assert await view.query_selector("#entries button[data-save]") is not None
+    assert await view.query_selector("#entries button[data-accept]") is not None
+
+
+def test_the_page_has_no_stray_control_characters():
     """The same class of bug that broke the script: an escaped sequence collapsing into a
     real control character during an edit."""
     text = DASHBOARD.read_text(encoding="utf-8")

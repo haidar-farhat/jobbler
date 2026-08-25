@@ -151,11 +151,25 @@ def rank_experience(experiences: list, matched_skills: list[str]) -> list:
 
     Stable: entries mentioning more matched skills come first, and ties keep their original
     (reverse-chronological, as parsed) order.
+
+    The haystack includes the entry's bullets, not just its headline. A role called
+    "Full-Stack Developer" whose bullets are entirely about RAG and FastAPI scored zero
+    against a RAG posting when only the headline was read -- so the entry that actually
+    answered the job was ranked below one that merely had the right title.
     """
     lowered = [s.casefold() for s in matched_skills]
 
     def relevance(fact) -> int:
-        haystack = f"{fact.key} {fact.value}".casefold()
+        detail = getattr(fact, "detail", None) or {}
+        parts = [
+            fact.key,
+            fact.value,
+            detail.get("role", ""),
+            detail.get("organisation", ""),
+            detail.get("description", ""),
+            *(detail.get("bullets") or []),
+        ]
+        haystack = " ".join(str(p) for p in parts if p).casefold()
         return sum(1 for skill in lowered if skill in haystack)
 
     return sorted(experiences, key=relevance, reverse=True)
