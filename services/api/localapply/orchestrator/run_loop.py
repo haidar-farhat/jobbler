@@ -46,7 +46,13 @@ from ..policy.engine import PolicyEngine
 from ..policy.field_classifier import FieldClass, classify
 from ..policy.rules import RunContext, action_signature, decision_fingerprint
 from ..safety import KILL_SWITCH, AutomationHalted
-from .state_machine import TERMINAL_STATES, ApplicationState, InvalidTransition, transition
+from .state_machine import (
+    HAPPY_PATH,
+    TERMINAL_STATES,
+    ApplicationState,
+    InvalidTransition,
+    transition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -258,8 +264,18 @@ class RunManager:
             handle.status = "running"
         await self._bus.emit(run_id, EventType.RUN_RESUMED, "Resumed.")
 
+    #: A run that has already ended. Handles stay in `self._runs` after they finish so the
+    #: dashboard can still show them, which means "stop" and the kill switch reach them too.
+    TERMINAL_STATUSES = frozenset({"finished", "failed", "stopped"})
+
     async def stop(self, run_id: UUID, reason: str = "Stopped by user") -> None:
         handle = self._require(run_id)
+        if handle.status in self.TERMINAL_STATUSES:
+            # Already over. Without this, pressing STOP ALL AUTOMATION an hour after a
+            # successful submission rewrote that run's row as `stopped` with an error --
+            # turning a completed application into what reads like an aborted one.
+            return
+
         handle.status = "stopped"
         handle.resume_signal.set()  # Unblock so the loop can notice and exit.
         if handle.pending is not None:
@@ -271,14 +287,24 @@ class RunManager:
                 await handle.task
         await self._finish(handle, "stopped", reason)
 
-    async def stop_all(self, reason: str = "Kill switch engaged") -> None:
-        """The big red button. Engages the global kill switch, then unwinds every run."""
+    async def stop_all(self, reason: str = "Kill switch engaged") -> int:
+        """The big red button. Engages the global kill switch, then unwinds every live run.
+
+        Only *live* runs. A finished run has nothing left to stop, and touching it would
+        rewrite a completed record with an error that never happened.
+        """
         KILL_SWITCH.engage(reason)
-        for run_id in list(self._runs):
+        live = [
+            run_id
+            for run_id, handle in self._runs.items()
+            if handle.status not in self.TERMINAL_STATUSES
+        ]
+        for run_id in live:
             await self._bus.emit(run_id, EventType.KILL_SWITCH, reason)
             with contextlib.suppress(KeyError):
                 await self.stop(run_id, reason)
         await self._browser.stop()
+        return len(live)
 
     async def resolve_approval(
         self,
@@ -529,8 +555,21 @@ class RunManager:
                 self._mark_handled(handle, observation, decision)
                 return False
 
-        if decision.action is ActionType.SUBMIT:
-            await self._transition(handle, S.SUBMITTING, tolerant=True)
+        if decision.action is ActionType.SUBMIT and not await self._walk_to(handle, S.SUBMITTING):
+            # Authoritative, not tolerant. If the machine cannot legally reach SUBMITTING
+            # from here, the run has not passed the review gate -- and the right answer is
+            # to refuse *before* the click, not to swallow the refusal and then crash after
+            # the application has already gone.
+            await self._bus.emit(
+                handle.run_id,
+                EventType.POLICY_VERDICT,
+                f"Refusing to submit: this application is {handle.state.value}, which is "
+                f"not a state a submit may follow.",
+                agent="policy",
+                payload={"state": handle.state.value, "rule_id": "R010_REVIEW_GATE"},
+            )
+            self._mark_handled(handle, observation, decision)
+            return False
 
         assert handle.session is not None
         result = await self._executor.execute(decision, observation, handle.session)
@@ -667,8 +706,10 @@ class RunManager:
         # State first, then expose the pending approval: a client that sees `pending` set must
         # already see REVIEW_REQUIRED, never an in-between.
         handle.status = "waiting_approval"
-        await self._transition(handle, S.SAFE_FIELDS_FILLED, tolerant=True)
-        await self._transition(handle, S.REVIEW_REQUIRED, tolerant=True)
+        # Walked, not jumped. A run parked on an approval really has analysed the form and
+        # filled what it could, and writing those states is what makes the next move --
+        # REVIEW_REQUIRED -> SUBMITTING -- legal at all.
+        await self._walk_to(handle, S.REVIEW_REQUIRED)
 
         pending = PendingApproval(approval_id=approval.id, decision=decision)
         handle.pending = pending
@@ -814,6 +855,32 @@ class RunManager:
             finished_at=datetime.now(UTC),
         )
 
+    async def _walk_to(self, handle: RunHandle, target: ApplicationState) -> bool:
+        """Advance along the happy path to `target`, one legal step at a time.
+
+        The alternative -- jumping with `tolerant=True` -- looked harmless and was not. A
+        page that never classified as an application form left the run at BROWSER_RUNNING;
+        both gate transitions were then illegal and silently swallowed, the submit was
+        approved and clicked for real, and the *strict* move to SUBMITTED afterwards raised.
+        The application had genuinely been submitted and the run was recorded as failed.
+
+        Walking writes the states that were skipped, so the record matches what happened.
+        Returns False when the target is behind the current state or off the happy path
+        entirely, which is the caller's signal that this move must not be forced.
+        """
+        if handle.state is target:
+            return True
+        try:
+            here = HAPPY_PATH.index(handle.state)
+            there = HAPPY_PATH.index(target)
+        except ValueError:
+            return False
+        if there < here:
+            return False
+        for state in HAPPY_PATH[here + 1 : there + 1]:
+            await self._transition(handle, state)
+        return True
+
     async def _settle_application(self, handle: RunHandle) -> None:
         """Leave the application row saying what actually happened to it.
 
@@ -835,6 +902,16 @@ class RunManager:
         """
         if handle.application_id is None or handle.state in TERMINAL_STATES:
             return
+
+        # The row, not the handle. `handle.state` is this process's memory of the run; the
+        # row is what actually happened, and something else may have moved it -- a cancel
+        # from the board, or a second settle after a stop-then-exit race. Writing FAILED or
+        # BLOCKED over a terminal row would resurrect an application the user has finished
+        # with.
+        persisted = await self._application_state(handle.application_id)
+        if persisted is None or persisted in TERMINAL_STATES:
+            return
+        handle.state = persisted
 
         if handle.status == "failed":
             await self._transition(handle, S.FAILED, tolerant=True)
@@ -886,6 +963,17 @@ class RunManager:
                 setattr(run, key, value)
             session.add(run)
             await session.commit()
+
+    async def _application_state(self, application_id: UUID) -> ApplicationState | None:
+        """What the row actually says right now, not what this process remembers."""
+        async with session_factory()() as session:
+            application = await session.get(m.Application, application_id)
+            if application is None:
+                return None
+            try:
+                return ApplicationState(application.state)
+            except ValueError:
+                return None
 
     async def _update_application(self, application_id: UUID, **values) -> None:
         async with session_factory()() as session:

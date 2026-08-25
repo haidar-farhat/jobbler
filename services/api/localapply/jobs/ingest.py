@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import socket
 import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -75,6 +76,48 @@ class IngestResult:
     run_id: UUID
 
 
+def normalise_host(raw: str) -> tuple[str, ipaddress.IPv4Address | ipaddress.IPv6Address | None]:
+    """The host as a browser sees it, plus its address if it is a literal one.
+
+    Two normalisations, both learned from a working exfiltration:
+
+      * **A trailing dot is stripped.** `localhost.` is the fully-qualified form of
+        `localhost`; a browser resolves it to loopback and preserves the dot in
+        `location.href`, so a naive name check misses it both before *and* after a redirect.
+      * **Legacy IPv4 forms are parsed.** `ipaddress` accepts only dotted quads, but a
+        browser also accepts `2130706433`, `0x7f000001`, `017700000001`, `127.1` and `0` --
+        every one of which reaches 127.0.0.1. `socket.inet_aton` accepts exactly that family,
+        which is what makes it the right parser here rather than the stricter one.
+    """
+    host = (raw or "").strip().lower().rstrip(".")
+    if not host:
+        return "", None
+
+    try:
+        return host, ipaddress.ip_address(host)
+    except ValueError:
+        pass
+
+    # Only strings that are entirely numeric-ish can be a legacy IPv4 literal; a real domain
+    # cannot be, because its last label may not be all digits.
+    try:
+        packed = socket.inet_aton(host)
+    except OSError:
+        return host, None
+    return host, ipaddress.IPv4Address(packed)
+
+
+def _is_local(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return bool(
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_unspecified
+        or address.is_multicast
+    )
+
+
 def check_url(url: str, *, allow_loopback: bool) -> str:
     """Refuse anything that is not a plain public web page.
 
@@ -84,15 +127,16 @@ def check_url(url: str, *, allow_loopback: bool) -> str:
     third party. That is why loopback is refused by default rather than allowed for
     convenience.
 
-    Known limit, written down rather than assumed: this checks the URL, not the address the
-    host actually resolves to at connect time, so DNS rebinding is not covered.
+    This is the *syntactic* half. A name that resolves to a private address still passes
+    here; `resolve_is_public` is what closes that, and the fetch path runs both.
     """
     parts = urlsplit((url or "").strip())
     if parts.scheme not in {"http", "https"}:
         raise UnsafeURL(f"Only http and https URLs can be opened, not {parts.scheme or 'that'!r}.")
     if "@" in (parts.netloc or ""):
         raise UnsafeURL("A URL with credentials in it will not be opened.")
-    host = (parts.hostname or "").strip().lower()
+
+    host, address = normalise_host(parts.hostname or "")
     if not host:
         raise UnsafeURL("That URL has no host.")
 
@@ -101,19 +145,46 @@ def check_url(url: str, *, allow_loopback: bool) -> str:
 
     if host in _LOCAL_NAMES or host.endswith(".localhost"):
         raise UnsafeURL("That URL points back at this machine.")
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return url.strip()
-    if (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_reserved
-        or address.is_unspecified
-    ):
+    if address is not None and _is_local(address):
         raise UnsafeURL(f"{host} is a private or local address and will not be opened.")
     return url.strip()
+
+
+async def resolve_is_public(url: str, *, allow_loopback: bool) -> None:
+    """Refuse a *name* that resolves to an address on this side of the network.
+
+    The syntactic check cannot see this: `internal.example.com` looks like any other domain
+    until it is resolved. Every address the name resolves to is checked, not just the first,
+    because a name with one public and one private answer is the same attack with an extra
+    step.
+
+    This narrows DNS rebinding rather than closing it -- the browser resolves the name again
+    when it connects, and nothing here can bind that answer to this one. It is written down
+    rather than glossed, and it is why the syntactic check stays in place as well.
+    """
+    if allow_loopback:
+        return
+
+    parts = urlsplit((url or "").strip())
+    host, literal = normalise_host(parts.hostname or "")
+    if not host or literal is not None:
+        return  # a literal address was already judged by check_url
+
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise UnsafeURL(f"{host} could not be looked up.") from exc
+
+    for info in infos:
+        try:
+            address = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if _is_local(address):
+            raise UnsafeURL(
+                f"{host} resolves to {address}, which is on this machine's own network."
+            )
 
 
 #: Per-host pacing. The sleep is held *inside* the lock, so it also has the effect of
@@ -152,8 +223,16 @@ async def fetch_description(
         raise RuntimeError(problem)
 
     url = check_url(job.url, allow_loopback=settings.ingest_allow_loopback)
-    host = (urlsplit(url).hostname or "").lower()
+    await resolve_is_public(url, allow_loopback=settings.ingest_allow_loopback)
+    host, _ = normalise_host(urlsplit(url).hostname or "")
     await _pace(host, settings.ingest_min_interval_s)
+
+    # Pacing sleeps for seconds, and the switch can be pressed inside that window. Without
+    # this the run carried on into `new_session()`, which *relaunches* a browser the switch
+    # had just closed -- and the failure then surfaced to the user as "that page did not
+    # load", which is not what happened.
+    if KILL_SWITCH.engaged:
+        raise AutomationHalted(KILL_SWITCH.reason or "Automation stopped.")
 
     run_id = uuid4()
     await _record_run(run_id, application_id, url)
@@ -204,8 +283,13 @@ async def fetch_description(
         observation = await Observer(settings).observe(session, run_id, screenshot=False)
 
         # The post-redirect check. A posting that 302s somewhere private must be refused
-        # *before* a single byte of it is written to the job row.
+        # *before* a single byte of it is written to the job row. Both halves run again:
+        # the redirect target is a URL nobody vetted, and it can be a name as easily as a
+        # literal address.
         check_url(observation.url, allow_loopback=settings.ingest_allow_loopback)
+        await resolve_is_public(
+            observation.url, allow_loopback=settings.ingest_allow_loopback
+        )
 
         if observation.page_kind in WALLS:
             raise IngestBlocked(page_kind=observation.page_kind.value, url=observation.url)
@@ -298,5 +382,7 @@ __all__ = [
     "IngestResult",
     "UnsafeURL",
     "check_url",
+    "normalise_host",
+    "resolve_is_public",
     "fetch_description",
 ]

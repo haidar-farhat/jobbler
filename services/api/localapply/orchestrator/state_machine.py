@@ -41,7 +41,7 @@ S = ApplicationState
 
 #: The happy path, in order. `REVIEW_REQUIRED -> SUBMITTING` is the human-approval gate:
 #: there is no transition into SUBMITTING that does not pass through it.
-_HAPPY_PATH: list[ApplicationState] = [
+HAPPY_PATH: list[ApplicationState] = [
     S.DISCOVERED,
     S.PARSED,
     S.ANALYZED,
@@ -68,7 +68,7 @@ _INTERRUPTS: frozenset[ApplicationState] = frozenset({S.BLOCKED, S.FAILED, S.CAN
 def _build_transitions() -> dict[ApplicationState, frozenset[ApplicationState]]:
     table: dict[ApplicationState, set[ApplicationState]] = {s: set() for s in S}
 
-    for current, nxt in zip(_HAPPY_PATH, _HAPPY_PATH[1:], strict=False):
+    for current, nxt in zip(HAPPY_PATH, HAPPY_PATH[1:], strict=False):
         table[current].add(nxt)
 
     # Any live state can be interrupted.
@@ -87,7 +87,7 @@ def _build_transitions() -> dict[ApplicationState, frozenset[ApplicationState]]:
     # having re-filled and re-checked anything. The run loop never uses that edge -- it
     # resumes to FORM_ANALYZED -- so removing it costs nothing and closes the side door.
     table[S.USER_INTERVENTION] |= {
-        s for s in _HAPPY_PATH
+        s for s in HAPPY_PATH
         if s not in {S.REVIEW_REQUIRED, S.SUBMITTING, S.SUBMITTED}
     }
     table[S.USER_INTERVENTION] |= {S.FAILED, S.CANCELLED}

@@ -229,10 +229,16 @@ class LLMReasoner(Reasoner):
         self._router = router
 
     def build_prompt(self, observation: Observation, context: ReasoningContext) -> str:
+        # The URL and the title are written by whoever controls the page. Left bare they sit
+        # directly beside GOAL and ELEMENTS, which is the best position on the whole prompt
+        # for injected text -- and a <title> has no length limit, so it can carry a closing
+        # fence marker and a paragraph of instructions. `page_kind` is ours: the observer
+        # decided it, in code.
         parts = [
             f"GOAL: {context.goal}",
-            f"PAGE: {observation.page_kind.value} at {observation.url}",
-            f"TITLE: {observation.title}",
+            f"PAGE KIND: {observation.page_kind.value}",
+            "PAGE URL AND TITLE:",
+            wrap_untrusted(f"{observation.url}\n{observation.title}", limit=600),
             "ELEMENTS (address these by ref, and only these):",
             render_element_table(observation.elements, context.handled_fields),
         ]

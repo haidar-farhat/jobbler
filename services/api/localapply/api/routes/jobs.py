@@ -190,10 +190,14 @@ async def list_jobs(
 
     def keep(job: m.Job, application: m.Application) -> bool:
         if state is not None:
-            return application.state == state
-        # A cancelled job is history, not work in hand.
-        if application.state == S.CANCELLED.value:
+            if application.state != state:
+                return False
+        # A cancelled job is history, not work in hand -- unless it was asked for by name.
+        elif application.state == S.CANCELLED.value:
             return False
+        # Falls through in both branches: `?state=recommended&min_score=0.9` used to return
+        # a job scored 0.1, because naming a state returned early and dropped every other
+        # filter on the floor.
         if source is not None and job.source != source:
             return False
         if min_score is not None and (job.match_score or 0.0) < min_score:
@@ -452,7 +456,7 @@ async def make_documents(
 
     built: list[dict] = []
     try:
-        for kind in payload.kinds:
+        for kind in payload.kinds:  # noqa: SIM117 - the try wraps the whole loop deliberately
             result = await build_document(
                 session, settings, profile,
                 kind=kind,
