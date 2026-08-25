@@ -52,6 +52,10 @@ class UnsafeURL(ValueError):
     """A URL this must not open. Refused before a browser is started."""
 
 
+class PolicyRefused(RuntimeError):
+    """The policy engine refused the navigation. Not the page's fault, and not a wall."""
+
+
 @dataclass
 class IngestBlocked(RuntimeError):
     """The page is a wall. Nothing was stored; a person takes it from here."""
@@ -268,7 +272,10 @@ async def fetch_description(
         # REQUIRE_APPROVAL is a hard stop here rather than a prompt.
         verdict = PolicyEngine().evaluate(decision, seed, context)
         if verdict.blocks_execution:
-            raise IngestBlocked(page_kind="error", url=url)
+            # Not a wall: policy refused this, which is a different thing from a page that
+            # would not load. Parking the job and telling the user "that page did not load"
+            # would send them to open a URL that is fine.
+            raise PolicyRefused(f"[{verdict.rule_id}] {verdict.reason}")
 
         result = await BrowserExecutor(settings).execute(decision, seed, session)
         await _record_action(run_id, session.session_id, decision, result)
@@ -379,6 +386,7 @@ __all__ = [
     "MIN_DESCRIPTION_CHARS",
     "WALLS",
     "IngestBlocked",
+    "PolicyRefused",
     "IngestResult",
     "UnsafeURL",
     "check_url",

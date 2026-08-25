@@ -15,6 +15,7 @@ import contextlib
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -278,13 +279,65 @@ def check_ai_engine(root: Path) -> None:
     ok(f"Ollama ready: {', '.join(models[:3])}")
 
 
-def start_api(root: Path, python: Path, port: int) -> subprocess.Popen:
-    api = root / "services" / "api"
+#: How many ports past the one you asked for the launcher will try.
+PORT_SEARCH = 20
+
+
+def port_is_free(port: int) -> bool:
+    """Can we actually bind this port?
+
+    Asking `/health` is not enough on its own. It answers "is *our* API already there",
+    which is a different question from "can uvicorn bind here" -- a port held by anything
+    else answers nothing at all, and the launcher used to start uvicorn against it, watch it
+    die, and report "the API exited during startup".
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        # No SO_REUSEADDR: we want to know whether uvicorn will succeed, and it does not
+        # set it either. A port in TIME_WAIT should read as taken.
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def choose_port(port: int, *, explicit: bool) -> int:
+    """The requested port, or the next free one after it.
+
+    A local-first app that refuses to start because something unrelated holds 8000 is
+    annoying in a way that has no upside -- the port is an implementation detail, and the
+    launcher prints and opens whichever one it used. When the port was named explicitly with
+    `--port` it is honoured strictly instead: being sent somewhere you did not ask for is
+    worse than being told no.
+    """
+    if port_is_free(port):
+        return port
+
     if http_json(f"http://127.0.0.1:{port}/health") is not None:
         die(
-            f"Something is already serving on port {port}.",
-            "Close it, or start this launcher with --port <other>.",
+            f"LocalApply is already running on port {port}.",
+            f"Open http://127.0.0.1:{port}/ , or close that window first.",
         )
+    if explicit:
+        die(
+            f"Port {port} is taken by something else.",
+            "Pick another with --port <n>, or close whatever is using it.",
+        )
+
+    for candidate in range(port + 1, port + 1 + PORT_SEARCH):
+        if port_is_free(candidate):
+            warn(f"Port {port} is taken by something else. Using {candidate} instead.")
+            return candidate
+
+    die(
+        f"Ports {port}-{port + PORT_SEARCH} are all taken.",
+        "Close something, or start this launcher with --port <n>.",
+    )
+    raise SystemExit(1)
+
+
+def start_api(root: Path, python: Path, port: int) -> subprocess.Popen:
+    api = root / "services" / "api"
 
     log_path = root / "var" / "launcher-api.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -358,7 +411,9 @@ def main() -> int:
             stream.reconfigure(line_buffering=True)
 
     parser = argparse.ArgumentParser(prog="LocalApply", description="Start LocalApply.")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=8000,
+                        help="Port to serve on. Without it the launcher moves to the "
+                             "next free port when the default is taken.")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser.")
     parser.add_argument("--no-seed", action="store_true", help="Skip the profile seed check.")
     args = parser.parse_args()
@@ -397,9 +452,13 @@ def main() -> int:
         n += 1
 
     step(n, total, "API + dashboard")
-    proc = start_api(root, python, args.port)
+    # `--port` in argv means the user chose it, so honour it strictly; otherwise move along
+    # to the next free one rather than refusing to start over a port nobody chose.
+    asked_for_a_port = any(a == "--port" or a.startswith("--port=") for a in sys.argv[1:])
+    port = choose_port(args.port, explicit=asked_for_a_port)
+    proc = start_api(root, python, port)
 
-    url = f"http://127.0.0.1:{args.port}/"
+    url = f"http://127.0.0.1:{port}/"
     print(f"\n  {green('Ready')}  {url}\n")
     if not args.no_browser:
         webbrowser.open(url)
@@ -418,7 +477,7 @@ def main() -> int:
         pass
     finally:
         if proc.poll() is None:
-            shutdown(proc, args.port)
+            shutdown(proc, port)
 
     return 0
 

@@ -10,6 +10,7 @@ is the property the whole design rests on.
 
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -310,7 +311,7 @@ async def ingest(
     if payload.mode != "fetch":
         raise HTTPException(400, "mode must be 'paste' or 'fetch'.")
 
-    from ...jobs.ingest import IngestBlocked, UnsafeURL, fetch_description
+    from ...jobs.ingest import IngestBlocked, PolicyRefused, UnsafeURL, fetch_description
 
     if KILL_SWITCH.engaged:
         raise HTTPException(
@@ -339,6 +340,10 @@ async def ingest(
                 f"{job_id}/unblock and paste the text with mode=paste."
             ),
         }
+    except PolicyRefused as exc:
+        # The job stays where it was: policy refusing a navigation is a fact about this
+        # build's rules, not something the user can go and fix in their own browser.
+        raise HTTPException(409, str(exc)) from exc
     except AutomationHalted as exc:
         # Caught before RuntimeError, which it subclasses. The pre-check above closes the
         # common case, but the switch can be engaged between it and the executor's own
@@ -471,12 +476,26 @@ async def make_documents(
             built.append({**document_summary(result.document),
                           "notes": result.notes,
                           "pdf_error": result.pdf_error})
-    except (NoAcceptedFacts, UngroundedDocument, ValueError) as exc:
+    except asyncio.CancelledError:
+        # The client hung up, or the server is shutting down. Park the row *before*
+        # re-raising: CancelledError is a BaseException, so it does not reach the handler
+        # below, and a job left in `documents_generating` has no way back -- /unblock needs
+        # a resume point and /apply refuses the state.
+        await P.block(session, application, resume_to=S.USER_APPROVED,
+                      reason="Document generation was interrupted.")
+        raise
+    except Exception as exc:  # noqa: BLE001 - see below
+        # Deliberately every exception, not the three expected ones. A model timeout, a
+        # Chromium crash mid-PDF, a database hiccup -- each stranded the application in
+        # `documents_generating` forever, because the state was committed before the work
+        # started and only three exception types put it somewhere recoverable.
         await P.block(session, application, resume_to=S.USER_APPROVED, reason=str(exc))
         return {
             "state": application.state,
             "resume_state": application.resume_state,
-            "error": str(exc),
+            "error": f"{exc.__class__.__name__}: {exc}"
+            if not isinstance(exc, NoAcceptedFacts | UngroundedDocument | ValueError)
+            else str(exc),
             "retry": f"POST /jobs/{job_id}/unblock then POST /jobs/{job_id}/documents",
         }
 
@@ -529,6 +548,12 @@ async def apply(
         # The upload action reads this key. Pointing it at the CV written *for this posting*
         # is the whole reason the documents step exists.
         context.profile["resume_path"] = document.pdf_path
+
+    # Checked again, immediately before starting, with no await in between. The check above
+    # is separated from `runs.start()` by two awaits, which is long enough for a second
+    # request -- another dashboard tab, an API client -- to pass its own check and start a
+    # second run against the same application.
+    _no_live_run(runs, application)
 
     try:
         handle = await runs.start(

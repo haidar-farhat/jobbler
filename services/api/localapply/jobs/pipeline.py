@@ -64,7 +64,14 @@ async def advance(
 
     The audit row is not decoration: it is what lets `GET /jobs/{id}` show a real history,
     and what makes "which step went wrong" answerable after the fact rather than guessable.
+
+    The row is re-read first, and that is not defensive habit. Sessions are configured with
+    `expire_on_commit=False`, so an `Application` loaded at the top of a request keeps its
+    old `state` in memory no matter what anyone else commits. `POST /jobs/{id}/documents`
+    can run for minutes with a model; cancel the job from the board while it runs and the
+    stale copy would validate `user_approved -> ready_for_browser` and quietly un-cancel it.
     """
+    await session.refresh(application)
     current = ApplicationState(application.state)
     application.state = transition(current, target).value  # raises InvalidTransition
     application.updated_at = utc_now()
