@@ -141,8 +141,47 @@ class GeneratedDocument(SQLModel, table=True):
 # --------------------------------------------------------------------------------------
 
 
+class SavedSearch(SQLModel, table=True):
+    """A board to watch. Running it puts new postings on the board, already scored.
+
+    Deliberately not a schedule. Nothing here runs itself: a local-first app that is only
+    on when you are looking at it has nowhere to hide a timer, and a search that fires while
+    you are asleep is a search whose results you cannot see it produce.
+    """
+
+    __tablename__ = "saved_searches"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    profile_id: UUID = Field(foreign_key="profiles.id", index=True)
+    #: A key in `jobs.connectors.BOARDS`: greenhouse | lever | ashby.
+    source: str = Field(index=True)
+    #: The board's own handle for a company. Every board calls it something different.
+    handle: str
+    label: str = ""
+    #: Case-insensitive substring filters applied to the *title* only. Filtering on the
+    #: description would mean the board's own text decides what you see, and a posting that
+    #: lists every keyword would always win.
+    include: list = Field(default_factory=list, sa_column=Column(sa.JSON))
+    exclude: list = Field(default_factory=list, sa_column=Column(sa.JSON))
+    #: Below this, a posting is recorded as seen but no job row is created. Stops a board of
+    #: 800 roles burying the six that matter.
+    min_score: float = 0.0
+    enabled: bool = True
+    last_run_at: datetime | None = Field(
+        default=None, sa_column=Column(sa.DateTime(timezone=True), nullable=True)
+    )
+    last_result: dict = Field(default_factory=dict, sa_column=Column(sa.JSON))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=_ts_column())
+
+
 class Job(SQLModel, table=True):
     __tablename__ = "jobs"
+    #: One row per posting per board. Without this, running a search twice creates a second
+    #: copy of every job on it -- and the second copy has its own application, its own
+    #: state, and no memory that you already cancelled the first.
+    __table_args__ = (
+        sa.UniqueConstraint("source", "external_id", name="uq_jobs_source_external_id"),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     source: str = "fixture"
@@ -310,6 +349,7 @@ __all__ = [
     "BrowserSessionRow",
     "Job",
     "Profile",
+    "SavedSearch",
     "ProfileFact",
     "Screenshot",
 ]
