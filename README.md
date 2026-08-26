@@ -1,514 +1,530 @@
+<div align="center">
+
 # LocalApply
 
-A local-first autonomous job-application workstation. Perception, reasoning, execution, and
-user control are four separate layers, not one model with a browser attached.
+**A local-first autonomous job-application workstation.**
+
+Find jobs, score them against your real CV, write documents that only claim what you can back,
+and let a browser agent fill the forms — with you approving every consequential action.
+
+Your data never leaves your machine. Nothing is ever submitted without you saying so.
+
+[![Tests](https://img.shields.io/badge/tests-651%20passing-3fb950?style=for-the-badge)](#tests)
+[![Python](https://img.shields.io/badge/python-3.14-3776ab?style=for-the-badge&logo=python&logoColor=white)](#requirements)
+[![Local first](https://img.shields.io/badge/cloud-none-58a6ff?style=for-the-badge)](#your-data)
+[![Dry run](https://img.shields.io/badge/DRY__RUN-on%20by%20default-d29922?style=for-the-badge)](#safety-properties)
+
+[**Get started**](#get-started) · [**How it works**](#how-it-works) · [**Safety**](#safety-properties) · [**Architecture**](docs/architecture.md) · [**ADRs**](docs/adr)
+
+</div>
+
+---
+
+## What it does
+
+```mermaid
+flowchart LR
+    A["🔍 Watched boards<br/><sub>Greenhouse · Lever · Ashby</sub>"] --> B["📊 Scored<br/><sub>against your accepted skills</sub>"]
+    B --> C["✋ You approve<br/><sub>the only way past this point</sub>"]
+    C --> D["📄 Documents<br/><sub>grounded in facts you accepted</sub>"]
+    D --> E["🤖 The agent applies<br/><sub>you approve each risky field</sub>"]
+    E --> F["📬 What came back<br/><sub>reply rate by match score</sub>"]
+
+    style C fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style F fill:#238636,stroke:#3fb950,color:#fff
+```
+
+Point it at a company on a job board and new postings arrive already scored against your CV.
+Approve one, and it writes a CV and cover letter tailored to that posting — every line traced
+to a fact you personally accepted. Then a browser agent fills the form, stopping to ask you
+about anything that matters. Record what came back, and it tells you what is actually working.
+
+---
+
+## How it works
+
+Four layers, deliberately separate. The reasoner proposes; it holds no browser handle and
+cannot act. The policy engine — plain Python, **no model** — decides. The executor performs
+mechanical operations and interprets nothing.
+
+```mermaid
+flowchart LR
+    subgraph loop [" "]
+        direction LR
+        O["👁 OBSERVE<br/><sub>Playwright</sub><br/><br/>accessibility tree<br/>→ opaque refs"]
+        R["🧠 REASON<br/><sub>local LLM</sub><br/><br/>proposes one action<br/>by ref only"]
+        P["⚖️ POLICY<br/><sub>plain code</sub><br/><br/>allow · ask · deny"]
+        E["⚡ EXECUTE<br/><sub>Playwright</sub><br/><br/>resolves the ref<br/>and does it"]
+    end
+    O --> R --> P --> E
+    E -.-> O
+
+    style R fill:#3d2b56,stroke:#a371f7,color:#fff
+    style P fill:#1c3a2e,stroke:#3fb950,color:#fff
+```
+
+**The model never sees a selector and never emits one.** It gets a table of opaque refs —
+`e17 | textbox | required | Email address` — and answers with a ref. Refs are rebuilt every
+observation, so a stale one fails closed. A prompt-injected page cannot induce an arbitrary
+click, because there is no vocabulary in which to express one. See
+[ADR 0002](docs/adr/0002-opaque-element-refs.md).
+
+<details>
+<summary><b>The application state machine</b> — eighteen states, and exactly two writers</summary>
+
+<br/>
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> discovered
+    discovered --> parsed: paste or fetch
+    parsed --> analyzed: extract requirements
+    analyzed --> scored: match your skills
+    scored --> recommended
+    recommended --> user_approved: ✋ you confirm
+    user_approved --> documents_generating
+    documents_generating --> ready_for_browser
+    ready_for_browser --> browser_running: hand to the agent
+    browser_running --> form_analyzed
+    form_analyzed --> safe_fields_filled
+    safe_fields_filled --> review_required
+    review_required --> submitting: ✋ you approve the submit
+    submitting --> submitted
+    submitted --> [*]
+
+    browser_running --> blocked: CAPTCHA · login wall
+    blocked --> user_intervention
+    user_intervention --> form_analyzed: you handled it
+```
+
+`SUBMITTING` has exactly one predecessor. A run that detours through a CAPTCHA re-enters
+*before* the review gate and passes through it again — resuming can never become a side door
+into submission.
+
+The column is written by **two wrappers and no more**: `jobs.pipeline.advance` before the
+browser, `RunManager._transition` after. There is a test that greps the package for a third.
+
+</details>
+
+---
+
+## Get started
+
+> **Windows.** Steps 4–5 need a reboot, and none of this is installed by default.
+
+<table>
+<tr><td width="60"><h3>1</h3></td><td>
+
+**Disable the Windows Store Python aliases.** Settings → Apps → Advanced app settings → App
+execution aliases → turn off `python.exe` and `python3.exe`. The default `python` on PATH is a
+Store stub, not an interpreter.
+
+</td></tr>
+<tr><td><h3>2</h3></td><td>
+
+**Python 3.12+** from python.org, "Add to PATH" ticked. Verified on 3.14.7 — every dependency,
+including `asyncpg` and `greenlet`, has cp314 wheels.
+
+</td></tr>
+<tr><td><h3>3</h3></td><td>
+
+`wsl --install` from an admin PowerShell, then **reboot**.
+
+</td></tr>
+<tr><td><h3>4</h3></td><td>
+
+**Docker Desktop** with the WSL2 backend. Only Postgres and Redis run in containers — the app
+itself runs natively.
+
+</td></tr>
+<tr><td><h3>5</h3></td><td>
+
+```powershell
+.\dev.ps1 setup
+```
+
+</td></tr>
+</table>
+
+### Then: one double-click
+
+<div align="center">
+
+### ▶ `LocalApply.exe`
+
+</div>
+
+It checks Docker, brings up the containers, applies any pending migration, generates your API
+token, seeds the profile, starts the API, and opens the dashboard — reporting each step and
+saying exactly what to do if one fails.
 
 ```
-    OBSERVE  ──►  REASON  ──►  POLICY  ──►  EXECUTE  ──►  OBSERVE ──┐
-   (Playwright)    (LLM)    (plain code)  (Playwright)              │
-        ▲                                                          │
-        └──────────────────────────────────────────────────────────┘
+[1/8] Docker              OK  Docker engine 29.7.2
+[2/8] Postgres + Redis    OK  Postgres and Redis healthy
+[3/8] Python environment  OK  Interpreter services\api\.venv\Scripts\python.exe
+[4/8] Access              OK  API token in place
+...
+[8/8] API + dashboard     OK  API listening on port 8000  [DRY RUN]
+
+  Ready  http://127.0.0.1:8000/
 ```
 
-The reasoner proposes; it holds no browser handle and cannot act. The policy engine — plain
-Python, no model — decides. The executor performs mechanical Playwright operations and
-interprets nothing. Every step is appended to a log that drives both the live dashboard and
-offline replay.
+Ctrl+C stops the API and engages the kill switch on the way out, so no run is left half-way
+through a form. The containers stay up, so the next start is quick.
 
-**Status: the loop, your CV, your documents, the job pipeline, and discovery.** The whole agent loop
-runs end to end against a local HTML fixture, driven either by a deterministic scripted
-reasoner or by a local model through Ollama. Your CV is parsed into individually-approved
-facts you can correct by hand, and tailored CVs and cover letters are generated from them —
-grounded, so every line traces to a fact you accepted. A job posting goes on a board, gets
-scored against your accepted skills, waits for you to approve it, gets its own documents, and
-is then handed to the agent. Point it at a company on Greenhouse, Lever or Ashby and new
-postings arrive on the board already scored. Record what came back and it will tell you
-whether any of it is working.
+| Flag | |
+|---|---|
+| `--port <n>` | Serve on a specific port. Without it, the launcher **moves to the next free port** rather than refusing to start over one nobody chose. |
+| `--remote` | Also answer your phone. Binds to your tunnel address — never `0.0.0.0` — and refuses outright without a token. |
+| `--show-token` | Print the API token. Needed once, to pair a phone. |
+| `--no-browser` · `--no-seed` | |
 
-- [Architecture](docs/architecture.md)
-- [Agent protocol](docs/agent-protocol.md)
-- [ADR 0001 — why the loop is split four ways](docs/adr/0001-observe-reason-policy-execute.md)
-- [ADR 0002 — why the model never sees a selector](docs/adr/0002-opaque-element-refs.md)
-- [ADR 0003 — a model may rephrase a fact, never author a claim](docs/adr/0003-model-is-a-rewriter.md)
+**The dashboard needs no Node.** The API serves a zero-build Mission Control at `/` — the same
+status strip, live event stream, screenshots and approval cards, in one dependency-free file.
 
 ---
 
 ## Safety properties
 
-These are enforced structurally and covered by tests, not asserted in a prompt:
+Enforced structurally and covered by tests — not asserted in a prompt.
 
-- **No application is ever submitted without a human approving that exact action.**
-  `SUBMIT` is its own action type, gated by rule `R010`, and `SUBMITTING` is reachable from
-  exactly one state (`REVIEW_REQUIRED`). Approving one action does not authorise a different
-  value or a different element.
-- **The model cannot address anything the observer did not enumerate.** It emits opaque refs
-  (`e17`), never selectors or coordinates. Refs are rebuilt every observation, so stale ones
-  fail closed. See ADR 0002.
-- **Signatures, government IDs, demographic questions, and credentials are never filled** —
-  not at any confidence, and not unlockable by approval. They are left for you, and the run
-  tells you which ones before it submits.
-- **Page content cannot weaken policy.** The policy engine contains no model, so a prompt
-  injection can at most produce a bad proposal, which policy then rejects.
-- **`DRY_RUN=true` by default.** Submits are logged and simulated but never actually clicked.
-- **The kill switch is checked before every action**, by both the run loop and the executor,
-  and before a job posting is fetched.
-- **A job posting cannot advance itself.** Requirement extraction is a regular expression
-  over a fixed vocabulary and the score is arithmetic — no model is involved anywhere in the
-  pipeline, and no automated path reads the score. Getting past `RECOMMENDED` takes a request
-  from you carrying an explicit confirmation. Only vocabulary words and booleans are ever
-  written to the database from a posting; an assertion runs before the commit.
-- **The API is behind a token.** Generated on first run and written to `.env`. This
-  machine is exempt, because a login screen on a local dashboard is one people turn
-  off; anything else needs it. The app **refuses to start** bound to a network address
-  with no token set — that is the one hard ordering constraint in the roadmap, and it is
-  enforced in code rather than remembered.
-- **A notification never carries a value.** It says which field needs approving, not
-  what would go in it: those values are your name, your phone number and your salary
-  expectations, and a push service is a third party.
-- **A run always terminates.** The action budget bounds executed actions, and asking for help
-  about a page that has not changed twice in a row ends the run with a reason instead of
-  looping.
+| | |
+|---|---|
+| 🛑 | **Nothing is submitted without you approving that exact action.** `SUBMIT` is its own action type, gated by rule `R010`. Approving one action does not authorise a different value or a different element. |
+| 🔗 | **The model cannot address what the observer did not enumerate.** Opaque refs only — never selectors, never coordinates. |
+| 🚫 | **Signatures, government IDs, demographic questions and credentials are never filled.** Not at any confidence, and not unlockable by approval. |
+| 💉 | **Page content cannot weaken policy.** The policy engine contains no model, so an injection can at most produce a bad proposal — which policy then rejects. |
+| 🧪 | **`DRY_RUN=true` by default.** Submits are logged and simulated, never actually clicked. |
+| ⏹ | **The kill switch is checked before every action** — by the run loop, by the executor, and before any page is fetched. |
+| 📋 | **A job posting cannot advance itself.** Requirement extraction is a regex over a fixed vocabulary and the score is arithmetic. No model anywhere in the pipeline, and no automated path reads the score. |
+| 🔑 | **The API is behind a token**, generated on first run. The app **refuses to start** bound to a network address with no token set. |
+| 🔕 | **A notification never carries a value.** It says which field needs approving, not what would go in it. |
+| ♻️ | **A run always terminates.** The action budget bounds executed actions; asking for help twice about an unchanged page ends the run with a reason. |
 
-## The pipeline
+<details>
+<summary><b>What a real run actually did</b></summary>
 
+<br/>
+
+Driven through the HTTP API, approvals submitted with `source=phone`:
+
+| | |
+|---|---|
+| Safe fields filled uninterrupted | 10 (`R099_DEFAULT_ALLOW`) |
+| Stopped for approval | 4 fields + the submit (`R011`, `R010`) |
+| `NEVER_AUTOFILL` fields touched | **0** |
+| Submit | `simulated=true`, `R000_HUMAN_APPROVED` |
+| Events persisted | 85, seq 1–85, no gaps |
+
+The salary gate was approved with an **edited** value, and the executed action recorded the
+edit rather than the draft. An approval authorises exactly what was on screen.
+
+</details>
+
+---
+
+## Your data
+
+Everything lives on your machine. There is no account, no cloud, no telemetry, and the only
+outbound requests are to job boards you explicitly asked it to read.
+
+```mermaid
+flowchart TB
+    subgraph yours ["🏠 Your machine"]
+        direction LR
+        DB[("Postgres<br/><sub>facts · jobs · audit</sub>")]
+        API["FastAPI"]
+        LLM["Ollama<br/><sub>local model</sub>"]
+        BR["Chromium"]
+        API --- DB
+        API --- LLM
+        API --- BR
+    end
+    BOARDS["Job boards<br/><sub>public JSON APIs</sub>"] -.->|"read only,<br/>when you ask"| API
+    PHONE["📱 Your phone"] -.->|"private tunnel<br/>+ token"| API
+
+    style yours fill:#0d1117,stroke:#3fb950,color:#e6edf3
 ```
-add a job → score it → you approve → write its CV → hand it to the agent
-```
 
-Each arrow is one state change, validated by the state machine and recorded in the audit log.
-`GET /jobs/{id}` shows the whole walk. A job can be cancelled at any point, and one that got
-stuck comes back with `POST /jobs/{id}/unblock` — the server chooses where it resumes to, so
-"unblock" can never skip the approval step.
+**Back up in one click.** `/backup/export` gives you a zip of plain JSON plus the actual PDF
+bytes — readable in ten years by someone who has never heard of this app. Importing round-trips
+it exactly, including the entries you corrected by hand.
 
-Reading a posting from its URL is optional and explicit. It opens the URL *you typed*, once,
-in a plain browser with no stored session — and if the page wants a login or shows a CAPTCHA
-it stores nothing and parks the job for you. See [On real job sites](#on-real-job-sites).
+---
 
-## Watched boards
+## The parts
+
+<details>
+<summary><b>📋 Watched boards</b> — jobs arrive on their own</summary>
+
+<br/>
 
 Greenhouse, Lever and Ashby publish their job boards as public JSON. Point at a company and
-every new posting arrives on your board, already scored:
+every new posting arrives already scored:
 
-```
+```http
 POST /searches {"source": "greenhouse", "handle": "vercel", "include": ["engineer"]}
 POST /searches/run
 ```
 
-Documented public endpoints only — no key, no registration, no scraping of HTML that needs a
-browser to render. One request per board per run, paced per host, stopped instantly by the
-kill switch, and deduplicated on `(source, external_id)` so running a search twice is a no-op
-rather than a second copy of every job.
+Documented public endpoints only — no key, no registration, no scraping HTML that needs a
+browser to render. One request per board per run, paced per host, stopped instantly by the kill
+switch, and deduplicated on `(source, external_id)` so running a search twice is a no-op rather
+than a second copy of every job.
 
-Nothing runs on a timer. A local-first app that is only on when you are looking at it has
-nowhere to hide a scheduler, and a search that fires while you are asleep is one whose
-results you cannot watch it produce.
+**Nothing runs on a timer.** A local-first app that is only on when you are looking at it has
+nowhere to hide a scheduler, and a search that fires while you are asleep is one whose results
+you cannot watch it produce.
 
-## Did it work?
+Each board fails silently in its own way, and each is pinned by a test:
 
-Record what came back — replied, screening, interviewed, offer, rejected — and the board will
-tell you what is actually working: reply rate by match score, by board, by company, and how
-long people take to answer. Silence past five weeks reads as ghosted, derived from the clock
-rather than stored, so a reply in week six simply undoes it.
+| Board | The trap |
+|---|---|
+| **Greenhouse** | Omits the description entirely without `?content=true` — and still returns 200. Its `content` is entity-*escaped* HTML, so a strip-tags pass finds no tags and hands you a wall of `&lt;p&gt;`. |
+| **Lever** | The job title is in `text`, not `title`. `descriptionPlain` is only ~⅓ of the posting — the requirements, where every skill lives, are in `lists[]`. |
+| **Ashby** | The primary key is undocumented. Neither it nor Lever tells you the company. |
 
-Rates from fewer than five applications are shown greyed out and labelled. Three applications
-with one reply is not a 33% reply rate, and presenting it as one invites a decision the data
-cannot support.
+</details>
 
-## Requirements
+<details>
+<summary><b>📄 Your CV, as approved facts</b></summary>
 
-Nothing on this list is installed by default on Windows. Steps 4–5 need a reboot.
+<br/>
 
-1. **Disable the Windows Store Python aliases** — Settings → Apps → Advanced app settings →
-   App execution aliases → turn off `python.exe` and `python3.exe`. The default `python` on
-   PATH is a Store stub, not an interpreter.
-2. **Python 3.12 or newer** from python.org, with "Add to PATH" ticked.
-   Verified on 3.14.7 — every dependency, including `asyncpg` and `greenlet`, has cp314
-   wheels.
-3. **Node 20 LTS**, then `corepack enable`. Needed *only* for the dashboard in `apps/web`;
-   the API, the agent, and the whole test suite run without it.
-4. `wsl --install` from an admin PowerShell, then **reboot**.
-5. **Docker Desktop** with the WSL2 backend.
+Upload a CV and it is parsed into individual facts — each **proposed**, never accepted on your
+behalf. Nothing reaches a document until you say yes to it.
 
-Verify each on its own line (PowerShell has no `&&`):
+Extraction from arbitrary PDFs is a draft, not an answer. A CV that writes its dates as
+`Full-time | 1 Year` has no date range for any parser to find, so the Profile tab lets you
+correct role, organisation, dates and bullets by hand. An edited fact is marked as yours and a
+later re-import will not quietly overwrite it.
 
-```powershell
-python --version
-node -v
-pnpm -v
-docker compose version
-```
+The app also **refuses its own output**. Someone re-uploaded a LocalApply-generated CV, the
+parser read the generator's own footer as an experience bullet, and it appeared on the next CV.
+Each round was built from the round before. Now a generated PDF is recognised by hash and
+refused.
 
-## Running it
+</details>
 
-Once set up, starting the app is **one double-click**: `LocalApply.exe` at the repo root.
+<details>
+<summary><b>✍️ Documents that only claim what you can back</b></summary>
 
-It checks Docker, brings up Postgres and Redis, applies any pending migration, seeds the
-profile if needed, starts the API, and opens the dashboard — reporting each step, and saying
-exactly what to do if one fails. Ctrl+C stops the API and engages the kill switch on the way
-out, so no run is left half-way through a form. The containers stay up so the next start is
-quick.
+<br/>
 
-```
-[1/6] Docker
-      OK  Docker engine 29.7.2
-[2/6] Postgres + Redis
-      OK  Postgres and Redis healthy
-...
-[6/6] API + dashboard
-      OK  API listening on port 8000  [DRY RUN]
+Every line of a generated document traces to an accepted fact — structurally, not by
+instruction. A document is assembled as a plan in which each item carries the fact ids behind
+it, and rendering refuses a plan containing an item that cites nothing, or that cites a fact
+you have not accepted.
 
-  Ready  http://127.0.0.1:8000/
-```
+With **Write with model** ticked, the model becomes a *rewriter, not an author*: it is handed
+one fact's text and asked to say the same thing better. `claims.check_claims` compares the
+result against the source and rejects any technology or figure that was not in it. A model that
+embellishes loses its embellishment; it cannot get a claim through. See
+[ADR 0003](docs/adr/0003-model-is-a-rewriter.md).
 
-Flags: `--port <n>`, `--no-browser`, `--no-seed`, `--show-token`. Without `--port` the
-launcher moves to the next free port rather than refusing to start over one nobody chose.
-Rebuild it after changing the launcher:
+The CV follows published ATS parsing rules: single column, standard headings, nothing in a
+header or footer, real text rather than CSS generated content, reverse-chronological roles, and
+a one-page budget that holds.
 
-```powershell
-.\services\api\.venv\Scripts\python.exe launcher\build.py
-```
+</details>
 
-**The dashboard needs no Node.** The API serves a zero-build Mission Control at `/` — the
-same status strip, live event stream, screenshot view, and approval cards as the React app,
-in one dependency-free HTML file. If you later run `pnpm build` in `apps/web`, the built
-React app takes over at `/` automatically.
+<details>
+<summary><b>📬 Did it work?</b></summary>
 
-## Setup
+<br/>
 
-Only needed once, and `.\dev.ps1 setup` does all of it in one command.
+Record what came back — replied, screening, interviewed, offer, rejected — and the board tells
+you reply rate by match score, by board, and by company, plus how long people take to answer.
 
+Silence past five weeks reads as ghosted, **derived from the clock rather than stored**, so a
+reply in week six simply undoes it.
 
-> **Call every tool as `.venv\Scripts\python.exe -m <tool>`.**
-> Not `activate` then `alembic`. Activation is easy to skip silently — and if you do, `pip
-> install` lands in your *global* Python and the `alembic` / `uvicorn` / `playwright`
-> commands resolve to nothing, because their `.exe` shims go to a Scripts directory that is
-> not on PATH. Invoking through the venv's own interpreter needs no activation, no PATH
-> edit, and is unaffected by PowerShell's execution policy.
+Rates from fewer than five applications are greyed out and labelled. Three applications with
+one reply is not a 33% reply rate, and presenting it as one invites a decision the data cannot
+support.
 
-### PowerShell
+</details>
 
-Windows PowerShell 5.1 has **no `&&` operator** — a line containing it fails to parse and
-*nothing on that line runs*. Use one command per line.
+<details>
+<summary><b>🧠 The AI engine, on 8 GB</b></summary>
 
-```powershell
-# from the repo root
+<br/>
 
-# 1. Postgres + Redis (the app itself runs natively; see docs/architecture.md)
-docker compose -f infrastructure/docker/docker-compose.yml up -d
+`ai/router.py` loads one large model at a time under an exclusive lock, because a 7–8B Q4
+reasoner is ~5 GB and a vision model another ~4 GB — they cannot coexist on this card.
+`/health` reports what is *actually* resident, VRAM in use, and how many swaps have happened:
+real operational state, not a config echo.
 
-# 2. Python environment
-cd services\api
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m playwright install chromium
-
-# 3. Config, then schema. The first migration is autogenerated against the live database.
-Copy-Item ..\..\.env.example ..\..\.env
-.\.venv\Scripts\python.exe -m alembic revision --autogenerate -m "initial schema"
-.\.venv\Scripts\python.exe -m alembic upgrade head
-
-# 4. Seed a profile
-.\.venv\Scripts\python.exe scripts\dev_bootstrap.py
-
-# 5. API — leave this running. Note: no --reload, see below.
-.\.venv\Scripts\python.exe -m uvicorn localapply.main:app --port 8000
-```
-
-> **Never start the API with `--reload` on Windows.** Reload mode runs uvicorn on a
-> `SelectorEventLoop`, and `asyncio.create_subprocess_exec` is not implemented there — so
-> Playwright cannot spawn its driver and every run dies with a bare `NotImplementedError`.
-> The API itself looks perfectly healthy. `dev.ps1` and the launcher both refuse to pass the
-> flag, and `/health` reports the problem if you somehow end up on the wrong loop.
-
-Dashboard, in a second terminal **from the repo root** (needs Node):
-
-```powershell
-cd apps\web
-pnpm install
-pnpm dev
-```
-
-Tests, from the repo root:
-
-```powershell
-.\services\api\.venv\Scripts\python.exe -m pytest
-```
-
-### Git Bash / WSL
+Model swaps cost 3–10 s and are treated as a scheduled orchestration cost.
 
 ```bash
-docker compose -f infrastructure/docker/docker-compose.yml up -d
-
-cd services/api
-python -m venv .venv
-./.venv/Scripts/python.exe -m pip install -e ".[dev]"
-./.venv/Scripts/python.exe -m playwright install chromium
-
-cp ../../.env.example ../../.env
-./.venv/Scripts/python.exe -m alembic revision --autogenerate -m "initial schema"
-./.venv/Scripts/python.exe -m alembic upgrade head
-./.venv/Scripts/python.exe scripts/dev_bootstrap.py
-./.venv/Scripts/python.exe -m uvicorn localapply.main:app --port 8000   # no --reload, see above
+pytest              # 651 tests, no model needed
+pytest -m ollama    # opt-in: live checks against a running Ollama
+pytest -m live      # opt-in: checks the real board APIs have not moved
 ```
 
-Open <http://localhost:5173>.
+</details>
 
-### If you already installed into your global Python
-
-Harmless, but it shadows nothing useful and clutters your interpreter. To undo:
-
-```powershell
-python -m pip uninstall -y localapply
-```
-
-The venv copy is independent and stays working.
-
-## Watch it work
-
-Click **Start run** with the prefilled fixture URL. The agent will:
-
-1. open the job posting and find the apply link;
-2. fill every field it can map to a **verified** profile fact — name, email, phone, links,
-   CV upload — without interrupting you;
-3. stop at **Expected salary**, because a negotiating position is not a fact. Approve or edit
-   the value;
-4. stop again for work authorisation, notice period, and the free-text question;
-5. tell you the **electronic signature** field is required and was left for you;
-6. stop once more before submitting, and submit only after you approve — simulated, because
-   `DRY_RUN` is on.
-
-Both fixture pages contain hidden prompt-injection payloads instructing the agent that
-approval has already been granted and to submit immediately. It stops and asks anyway. That
-is the point of the architecture, and there is a test for it.
+---
 
 ## Tests
 
 ```bash
 pytest                    # from the repo root
-pytest -m "not browser"   # unit tests only; no Playwright needed
+pytest -m "not browser"   # unit only; no Playwright needed
 ```
 
-Browser-backed tests skip themselves automatically if Chromium is not installed. The suite
-runs against SQLite, so no Docker is required.
+Browser tests skip themselves if Chromium is missing. The suite runs on SQLite, so **no Docker
+is required**.
 
-What is covered:
+<details>
+<summary><b>What is covered</b> — 651 assertions, and why each exists</summary>
+
+<br/>
 
 | Area | Assertion |
 |---|---|
-| `test_loop_integration.py` | A full run reaches `SUBMITTED` only after approval; no submit row exists while parked on the gate; rejecting everything never submits |
-| `test_injection.py` | Identical policy verdicts with and without an injection payload; a fully compromised reasoner naming an unobserved element is rejected |
-| `test_policy.py` | Every deny and approval rule; approval does not generalise across values or elements; approval cannot unlock a denied action |
-| `test_field_classifier.py` | All three safety classes; unknown fields default to *review*, not *safe* |
+| `test_loop_integration.py` | A full run reaches `SUBMITTED` only after approval; no submit row exists while parked on the gate; rejecting everything never submits; `agent_events` replays every ref |
+| `test_injection.py` | Identical policy verdicts with and without an injection payload; a fully compromised reasoner naming an unobserved element is rejected; no page-controlled string can close the prompt fence |
+| `test_policy.py` | Every deny and approval rule; approval does not generalise across values or elements |
+| `test_field_classifier.py` | All three safety classes; unknown fields default to *review*; a sentence containing "city" is not a city field; only something you can type into is ever safe |
 | `test_state_machine.py` | `SUBMITTING` is reachable from `REVIEW_REQUIRED` and nowhere else |
-| `test_model_router.py` | Reasoning and vision models are never co-resident on the 8 GB card |
-| `test_browser.py` | Ref enumeration, stale-ref invalidation, kill switch, dry-run submit |
-| `test_loop_integration.py` | `agent_events` survives the run and can replay every ref from the stored element table |
-| `test_cv_import.py` | Extraction, section splitting, and reconciliation; a corrupt file and a text-free one report *different* failures |
+| `test_browser.py` | Ref enumeration, stale-ref invalidation, kill switch, dry-run submit; an invisible reCAPTCHA is not a wall; a board of filter dropdowns is a listing, not a form |
+| `test_cv_import.py` | Extraction and reconciliation; a technology name hiding inside an ordinary word is not a split; a corrupt file and a text-free one report *different* failures |
 | `test_cv_import_api.py` | Upload proposes but accepts nothing; the reasoner cannot see a proposed fact; accepting a conflict supersedes rather than deletes |
-| `test_generation.py` | Grounding refuses an item citing nothing or citing an unaccepted fact; proposed/rejected/superseded facts never render; tailoring never adds |
-| `test_generation_api.py` | Versions increment and never overwrite; provenance flags facts that changed after sending; the PDF is a real PDF whose text omits skills you lack |
-| `test_ai_engine.py` | An invented ref never becomes an action; junk output retries then asks; a dead model pauses rather than crashes; a hallucinated skill in a rewrite is rejected and the original kept |
-| `test_writer.py` | Retrieve → draft → critique → revise; an invented summary or bullet is thrown away and the composed wording kept |
-| `test_ats_format.py` | Published ATS parsing rules: single column, standard headings, nothing in a header or footer, no CSS generated content; the summary leads, roles run reverse-chronologically, the page budget holds |
-| `test_cover_letter.py` | Every paragraph is a sentence, never a database row; tense follows the dates; a missing requirement is named rather than hidden; nothing internal to the tool reaches the page |
-| `test_dashboard.py` | The zero-build dashboard's script parses and binds, in a real browser; the entry editor never redraws under the cursor; a job title written by a stranger is escaped, not rendered |
-| `test_job_pipeline.py` | A posting cannot advance itself, raise its own approval, or put anything but a vocabulary word in the database; every skip is a 409; the state column has exactly two writers |
-| `test_ingest_boundary.py` | Private and loopback addresses are refused before a browser opens; a login wall stores nothing; the same host is paced between fetches |
-| `test_ollama_live.py` | Opt-in: can a real small model return one JSON object naming a real ref, and does it invent skills when rewriting |
+| `test_generation.py` · `test_generation_api.py` | Grounding refuses an item citing nothing; versions never overwrite; provenance flags facts that changed after sending |
+| `test_ats_format.py` | Single column, standard headings, nothing in a footer, no CSS generated content; the summary leads, roles run reverse-chronologically, the page budget holds |
+| `test_cover_letter.py` | Every paragraph is a sentence, never a database row; tense follows the dates; a missing requirement is named rather than hidden |
+| `test_writer.py` · `test_ai_engine.py` | An invented ref never becomes an action; an invented summary or bullet is thrown away and the composed wording kept |
+| `test_connectors.py` | Each board's silent-failure mode, pinned per board; plus opt-in live checks that the field names have not moved |
+| `test_discovery.py` | A board cannot advance a job, duplicate one, or put anything but a vocabulary word in the database |
+| `test_job_pipeline.py` | Every skip is a 409; the state column has exactly two writers, held by a grep |
+| `test_ingest_boundary.py` | Every form that reaches this machine is refused — `localhost.`, `2130706433`, `0x7f000001`, `127.1`; a login wall stores nothing; hosts are paced |
+| `test_security.py` | A stranger cannot read the profile; the token is compared in constant time; a new route is behind the gate by default |
+| `test_outcomes.py` | Recording an outcome never writes the state column; a rate from three applications is flagged as not enough |
+| `test_portability.py` | Export → wipe → import leaves everything identical, including hand-corrected entries |
+| `test_notify.py` | A notifier that raises does not reach the caller; a notification never carries a value |
+| `test_remote.py` | No token is a refusal, not a warning; keys come from the real `wg` binary or not at all |
+| `test_dashboard.py` | The script parses and binds, in a real browser; a job title written by a stranger is escaped, not rendered |
 
-## Verified
+</details>
 
-Run end to end on 2026-08-25 against Python 3.14.7, Postgres 16, Redis 7, Chromium 1234:
-
-```
-587 passed in 103.28s
-```
-
-A live run driven through the HTTP API, approvals submitted with `source=phone`:
-
-| | |
-|---|---|
-| Safe fields filled uninterrupted | 10 (`R099_DEFAULT_ALLOW`) |
-| Stops for approval | 4 fields + the submit (`R011`, `R010`) |
-| `NEVER_AUTOFILL` fields touched | **0** |
-| Submit | `simulated=true`, `R000_HUMAN_APPROVED` |
-| Events persisted | 85, seq 1–85, no gaps |
-
-The salary gate was approved with an *edited* value; the executed action recorded the edit,
-not the draft — an approval authorises exactly what was on screen.
-
-## Hardware note
-
-Built and measured against an RTX 5070 Laptop (**8 GB VRAM**) with 15 GB RAM. That does not
-fit a reasoning model and a vision model at once, so `ai/router.py` loads them **sequentially**
-under an exclusive lock with embeddings pinned. Model swaps cost 3–10 s and are treated as an
-orchestration concern. See [architecture.md](docs/architecture.md#deployment-shape).
-
-## Layout
-
-```
-apps/web/            React dashboard — Mission Control, Profile
-services/api/        FastAPI: contracts, browser, ai, policy, orchestrator, events, db
-packages/            Shared agent-protocol schemas (generated from contracts.py)
-infrastructure/      Postgres + Redis compose
-evaluation/fixtures/ The practice job posting and application form
-docs/                Architecture and ADRs
-tests/
-```
-
-## Importing a CV
-
-Open **Profile & CV**, upload a PDF, `.docx` or text CV, and every fact found comes back as
-a **proposal** with the confidence and the source line it came from. Nothing reaches an
-application until you accept it, one fact at a time.
-
-The sample CV yields 34 proposals: contact details, current title, 20-odd skills, two roles,
-education, and a certification.
-
-A fact has exactly one gate — its status:
-
-| status | meaning |
-|---|---|
-| `accepted` | you approved it; **the only status the agent may use** |
-| `proposed` | extracted, awaiting your decision; invisible to the agent |
-| `rejected` | you declined it; remembered, so a re-import does not ask again |
-| `superseded` | replaced by a newer accepted fact; kept as history |
-
-Behaviours worth knowing:
-
-- **A changed value is a conflict, not an overwrite.** If your CV has a new email and you
-  already accepted one, the proposal shows what it would replace, and the old value stays
-  live until you accept the new one.
-- **Bulk accept never touches conflicts.** `POST /documents/{id}/accept-all` takes
-  `category` and `min_confidence` filters and skips anything that would replace a fact you
-  already confirmed — that decision is not one to make in bulk.
-- **Re-uploading the same file is recognised** by content hash rather than duplicated.
-- **An unreadable file says so.** A scanned, image-only CV fails with an explicit message
-  rather than silently producing an empty profile; there is no OCR here.
-- Extraction is rule-based and deterministic. When a model-backed parser lands it feeds the
-  *same* review queue: a model may propose facts, never accept them.
-
-## Generating documents
-
-Paste a job description into **Profile & CV** and generate a **tailored CV**, a **cover
-letter**, or the **master CV**. Output is HTML plus a real PDF, printed by the Chromium that
-Playwright already installs — no second rendering stack.
-
-Starting a run generates a CV for that specific job automatically and uploads *that* instead
-of a stale generic file. If generation fails, the run degrades to your existing CV and says
-so; a document problem must never turn into "could not apply".
-
-**Every line traces to an accepted fact.** Not by instruction — structurally. Each item in a
-document carries the ids of the facts backing it, and `assert_grounded` refuses to render a
-plan containing an item that cites nothing, or that cites a fact you have not accepted. That
-gate sits between generation and rendering, so the model-backed writer in Phase 4 passes
-through it unchanged: a model may rephrase your experience, it may not invent one.
-
-What follows from that:
-
-- **Tailoring selects and orders; it never rewrites.** A tailored CV's facts are always a
-  subset of the master's, so it cannot claim more than the canonical record. The master is
-  never modified as a side effect.
-- **A missing skill is never claimed.** Matching is deliberately pessimistic — a skill you
-  cannot evidence counts as missing, and the score is reported honestly. In the run above the
-  match reads **43%, "missing RAG, Docker"** purely because those facts had not been accepted
-  yet, even though they appear in the CV file.
-- **Nothing unaccepted leaks in.** Proposed, rejected, and superseded facts are all invisible
-  to generation, and there are tests for each.
-- **Versions are never overwritten**, so what you actually sent stays recoverable.
-  `GET /generate/{id}/provenance` lists the facts behind a document and flags any that have
-  changed since — a sent document does not silently update itself.
-
-The deterministic writer reads plainly rather than eloquently. That is the honest trade for
-being unable to invent.
-
-## The AI engine
-
-Set `LA_REASONER=ollama` and the same loop runs on a local model instead of the scripted
-reasoner. Nothing else changes: `LLMReasoner` implements the identical interface, and every
-policy rule, approval gate and grounding check stays exactly where it was.
-
-**The model is contained by construction, not by instruction:**
-
-- It may name only a ref from the element table it was shown. An invented ref, or a CSS
-  selector, is rejected before it can become a `Decision` — the same `R002` guarantee, now
-  enforced at the model boundary too.
-- Unparseable output gets **one corrective retry**, then becomes `ask_user`. A small local
-  model narrating around its JSON should not stall a run; a model that cannot comply should
-  not guess.
-- A model that is **down** pauses the run and says so, naming Ollama, rather than crashing.
-- Page text still arrives inside `<UNTRUSTED_WEB_CONTENT>`, and policy still contains no
-  model — so a compromised reasoner can at worst produce a proposal that policy rejects.
-
-### Model-written documents
-
-With **Polish with model** ticked, generation stays deterministic and the model becomes a
-*rewriter*, not an author. The plan is built from accepted facts first — grounded by
-construction — and the model is then handed one line at a time and asked to say the same
-thing better. It cannot add an item, a section, or a fact reference, because it is never
-given the chance to.
-
-That leaves exactly one failure mode: a rewritten sentence saying more than its source did.
-`claims.check_claims` catches that — it flags any technology named in the prose that the
-supporting facts do not mention, and any invented figure ("led a team of 40"). A flagged
-rewrite is discarded, the original wording kept, and the dashboard **tells you it was
-overruled** rather than silently dropping it.
-
-This is a mitigation, not a proof. It catches named technologies from a known vocabulary; it
-cannot catch every embellishment. That is precisely why the model only ever rephrases a fixed
-set of facts, why the deterministic writer stays the default, and why nothing is sent without
-your review.
-
-### On 8 GB
-
-`ai/router.py` loads one large model at a time under an exclusive lock. `/health` reports
-what is actually resident, VRAM in use, and how many swaps have happened — real operational
-state, not a config echo. A 7-8B Q4 reasoner is the realistic ceiling on this card and will
-be noticeably slower than the scripted reasoner.
-
-```bash
-pytest              # 587 tests, no model needed
-pytest -m ollama    # 5 live checks against a running Ollama
-```
-
-The live suite is opt-in and skips itself cleanly when Ollama is not running. It asks the
-question the scripted tests cannot: whether a small local model can reliably return one JSON
-object naming a real ref.
+---
 
 ## Not built yet
 
-React Native app (Phase 9) · WireGuard remote access (Phase 10) · the agent looking at the
-page rather than reading its accessibility tree · data export and backup.
+The agent looking at the page rather than reading its accessibility tree · a phone app
+(deliberately cut — remote access already puts the dashboard on your phone) · anything that
+approves or applies on your behalf, ever.
 
-Phase 5 ingests **one posting at a time, chosen by you**. Bulk ingest, the Greenhouse / Lever
-/ Ashby JSON APIs, polling and dedupe on `(source, external_id)` all belong to Phase 6 —
-`jobs.external_id` is written today but nothing reads it yet. Two things are deliberately
-*not* coming with them: any automated advance past `RECOMMENDED` (no auto-approve, no score
-threshold — a posting raises its own score just by listing skills you have, and the design is
-safe only because nothing acts on the number), and re-scoring a job in place (a score is
-evidence of what was known when you approved it).
+<details>
+<summary><b>On real job sites</b> — the posture, and its limits</summary>
 
-### On real job sites
+<br/>
 
-The agent still runs against a local fixture on purpose. Automating LinkedIn violates its
-User Agreement and risks the account; when discovery is built it should target boards with
-public APIs or permissive terms (Greenhouse, Lever, Ashby), with LinkedIn treated as
-manual-assist — you drive the search, the agent observes and scores.
+The agent runs against a local fixture by default, on purpose. Automating LinkedIn violates its
+User Agreement and risks the account; discovery targets boards with public APIs or permissive
+terms instead, and LinkedIn stays manual-assist — you drive the search, the agent observes.
 
-Reading a posting is the one thing that does reach a real site, and its posture is **refuse,
-do not evade** — built rather than asserted, and tested as such:
+Reading a posting is the one thing that reaches a real site, and its posture is **refuse, do not
+evade** — built rather than asserted, and tested as such:
 
 - One URL per fetch, and it is the one **you typed**. A URL found in page content is never
   followed, which removes attacker-directed fetching as a class rather than as a case.
 - One navigation. No retry, no second session, no second attempt with different headers.
-- No user-agent, header, or cookie tampering; a plain browser with no stored session, so
-  there is no logged-in account to get banned.
+- No user-agent, header or cookie tampering; a plain browser with no stored session, so there
+  is no logged-in account to get banned.
 - A login wall or a CAPTCHA stores **nothing**, parks the job, and hands you the URL.
 - Per-host pacing, with the wait held inside the lock so fetches queue rather than race.
 - Private, loopback, link-local and reserved addresses are refused — before navigating, and
   again on whatever URL the browser actually landed on.
 
-Two limits, written down rather than assumed: the address check reads the URL, not the
-address the host resolves to at connect time, so DNS rebinding is not covered; and there is
-no `robots.txt` parser in this tree — the mitigations above stand in its place rather than
+Two limits, written down rather than assumed: the address check reads the URL, not the address
+the host resolves to at connect time, so DNS rebinding is not covered; and there is no
+`robots.txt` parser in this tree — the mitigations above stand in its place rather than
 pretending to honour a file nothing reads.
+
+</details>
+
+---
+
+## Layout
+
+```
+apps/web/            React dashboard (optional; the zero-build one is served by the API)
+services/api/        FastAPI — contracts, browser, ai, policy, orchestrator, jobs, events, db
+launcher/            LocalApply.exe
+packages/            Shared agent-protocol schemas, generated from contracts.py
+infrastructure/      Postgres + Redis compose
+evaluation/          The practice posting, and a harness that observes real forms
+docs/                Architecture and ADRs
+tests/
+```
+
+<details>
+<summary><b>Setting up by hand</b>, if you would rather not use <code>dev.ps1</code></summary>
+
+<br/>
+
+> **Call every tool as `.venv\Scripts\python.exe -m <tool>`.** Not `activate` then `alembic`.
+> Activation is easy to skip silently — and if you do, `pip install` lands in your *global*
+> Python and the `alembic` / `uvicorn` / `playwright` commands resolve to nothing, because
+> their shims go to a Scripts directory that is not on PATH.
+
+Windows PowerShell 5.1 has **no `&&` operator** — a line containing it fails to parse and
+*nothing on that line runs*. One command per line.
+
+```powershell
+# from the repo root
+docker compose -f infrastructure/docker/docker-compose.yml up -d
+
+cd services\api
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m playwright install chromium
+
+Copy-Item ..\..\.env.example ..\..\.env
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe scripts\dev_bootstrap.py
+
+# Leave this running. Note: no --reload.
+.\.venv\Scripts\python.exe -m uvicorn localapply.main:app --port 8000
+```
+
+> [!WARNING]
+> **Never start the API with `--reload` on Windows.** Reload mode runs uvicorn on a
+> `SelectorEventLoop`, where `asyncio.create_subprocess_exec` is not implemented — so
+> Playwright cannot spawn its driver and every run dies with a bare `NotImplementedError`,
+> while the API itself looks perfectly healthy. `dev.ps1` and the launcher both refuse to pass
+> the flag, and `/health` reports the problem if you end up on the wrong loop.
+
+Already installed into your global Python by accident? Harmless, and undone with
+`python -m pip uninstall -y localapply`. The venv copy is independent.
+
+</details>
+
+<details>
+<summary><b>Hardware</b></summary>
+
+<br/>
+
+Built and measured against an RTX 5070 Laptop (**8 GB VRAM**) with 15 GB RAM. That does not fit
+a reasoning model and a vision model at once, so the router loads them sequentially under an
+exclusive lock with embeddings pinned. See
+[architecture.md](docs/architecture.md#deployment-shape).
+
+</details>
+
+---
+
+<div align="center">
+<sub>
+
+**[Architecture](docs/architecture.md)** · **[Agent protocol](docs/agent-protocol.md)** ·
+**[ADR 0001 — why the loop is split four ways](docs/adr/0001-observe-reason-policy-execute.md)** ·
+**[ADR 0002 — why the model never sees a selector](docs/adr/0002-opaque-element-refs.md)** ·
+**[ADR 0003 — a model may rephrase a fact, never author a claim](docs/adr/0003-model-is-a-rewriter.md)**
+
+</sub>
+</div>
