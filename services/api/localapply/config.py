@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     #: local-first app has no business listening on 0.0.0.0 by default.
     bind_host: str = "127.0.0.1"
 
+    #: Let the agent look at the page as well as read its accessibility tree. Needs a
+    #: vision-language model installed -- one model does both jobs, because swapping a 5 GB
+    #: reasoner in and out on every observation costs 3-10 s and is unusable in a loop.
+    vision: bool = False
+    #: The VL model. It serves the reasoning role too when `vision` is on.
+    vision_model: str = "qwen2.5vl:7b"
+
     # --- Telling you something is waiting ---
     #: A native toast on this machine. Free, no account, works offline.
     notify_desktop: bool = True

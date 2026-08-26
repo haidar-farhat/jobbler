@@ -18,7 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from .ai.providers.ollama import OllamaProvider
 from .ai.providers.stub import StubProvider
 from .ai.reasoner import LLMReasoner, StubReasoner
-from .ai.router import ModelRouter
+from .ai.router import ModelRouter, use_one_model
+from .ai.seeing import SeeingReasoner
 from .api.routes import (
     agent,
     approvals,
@@ -77,11 +78,21 @@ def build_model_router(settings, resolved: str) -> ModelRouter:
     provider = (
         OllamaProvider(settings.ollama_base_url) if resolved == "ollama" else StubProvider()
     )
-    return ModelRouter(provider, vram_budget_mb=settings.vram_budget_mb)
+    router = ModelRouter(provider, vram_budget_mb=settings.vram_budget_mb)
+    if settings.vision:
+        # One model for both roles. The router recognises that they share a name and skips
+        # the swap, so looking at the page costs nothing beyond the image itself.
+        use_one_model(router, settings.vision_model)
+    return router
 
 
 def build_run_manager(settings, router: ModelRouter, resolved: str) -> RunManager:
-    reasoner = LLMReasoner(router) if resolved == "ollama" else StubReasoner()
+    if resolved != "ollama":
+        reasoner = StubReasoner()
+    elif settings.vision:
+        reasoner = SeeingReasoner(router, settings)
+    else:
+        reasoner = LLMReasoner(router)
 
     return RunManager(
         settings=settings,

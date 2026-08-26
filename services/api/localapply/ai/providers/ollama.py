@@ -76,16 +76,20 @@ class OllamaProvider:
     async def rerank(self, query: str, documents: list[str]) -> list[float]:
         raise NotImplementedError("Reranking lands with the RAG work in Phase 4.")
 
-    async def vision(self, prompt: str, image: bytes, **kw) -> str:
-        data = await self._post(
-            "/api/generate",
-            {
-                "model": kw.get("model"),
-                "prompt": prompt,
-                "images": [base64.b64encode(image).decode()],
-                "stream": False,
-            },
-        )
+    async def vision(self, prompt: str, image: bytes, *, system: str | None = None, **kw) -> str:
+        payload = {
+            "model": kw.get("model"),
+            "prompt": prompt,
+            "images": [base64.b64encode(image).decode()],
+            "stream": False,
+            "options": {"temperature": kw.get("temperature", 0.1)},
+        }
+        # `system` was silently dropped here while `generate` honoured it, so a caller that
+        # passed one got a model with no instructions at all -- and the failure looks like a
+        # model that ignores its rules rather than a model that was never given any.
+        if system:
+            payload["system"] = system
+        data = await self._post("/api/generate", payload)
         return data.get("response", "")
 
     async def health(self) -> bool:

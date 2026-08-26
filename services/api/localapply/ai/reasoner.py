@@ -17,7 +17,15 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
-from ..contracts import ActionType, Decision, ElementRole, Observation, ObservedElement, PageKind
+from ..contracts import (
+    TARGETED_ACTIONS,
+    ActionType,
+    Decision,
+    ElementRole,
+    Observation,
+    ObservedElement,
+    PageKind,
+)
 from ..policy.field_classifier import Classification, FieldClass, classify
 from .prompting import (
     REASONER_SYSTEM_PROMPT,
@@ -321,6 +329,19 @@ class LLMReasoner(Reasoner):
                 action=ActionType.ASK_USER,
                 confidence=0.0,
                 reason=f"Model reply could not be parsed: {exc.__class__.__name__}",
+            )
+
+        if decision.action in TARGETED_ACTIONS and decision.target_ref is None:
+            # Policy denies this too (R002_MISSING_TARGET), but denial ends the step while
+            # this is a formatting slip the retry loop can fix. It is also what a model
+            # answering with coordinates produces: `{"action": "click", "x": 450, "y": 320}`
+            # validates, because the unknown keys are simply dropped -- leaving a click with
+            # nothing to click.
+            return Decision(
+                action=ActionType.ASK_USER,
+                confidence=0.0,
+                reason=f"{decision.action.value} needs a target_ref from the element table. "
+                       "A position on the screen is not something this can act on.",
             )
 
         if decision.target_ref is not None and decision.target_ref not in observation.refs():

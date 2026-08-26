@@ -40,6 +40,23 @@ DEFAULT_MODELS: dict[ModelRole, ModelSpec] = {
 }
 
 
+def use_one_model(router: ModelRouter, name: str) -> None:
+    """Point the reasoning and vision roles at the same model.
+
+    A vision-language model answers both. Doing this is what turns "look at the page" from
+    a 3-10 s model swap on every single observation into no swap at all -- which is the
+    difference between a feature and one that is switched off within a day.
+
+    The VRAM figure is the vision spec's, because that is what is actually loaded.
+    """
+    vision = router.spec(ModelRole.VISION)
+    shared = ModelSpec(name, ModelRole.VISION, vision.vram_mb)
+    router._models[ModelRole.VISION] = shared  # noqa: SLF001 - configuration, at startup
+    router._models[ModelRole.REASON] = ModelSpec(  # noqa: SLF001
+        name, ModelRole.REASON, vision.vram_mb
+    )
+
+
 @dataclass
 class SwapStats:
     swaps: int = 0
@@ -120,6 +137,15 @@ class ModelRouter:
 
         async with self._lock:
             if self._resident is role:
+                return spec
+
+            # The same model can serve two roles, and when it does there is nothing to
+            # swap. A vision-language model answers both REASON and VISION, and without
+            # this check the router would unload and reload the identical weights on every
+            # observation -- 3-10 s each, inside the loop, for no change at all.
+            if self._resident is not None and self._models[self._resident].name == spec.name:
+                self._resident = role
+                self._loaded.add(role)
                 return spec
 
             required = spec.vram_mb + self._pinned_mb()
