@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .ai.providers.ollama import OllamaProvider
@@ -46,8 +46,6 @@ from .security import is_loopback
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURES_DIR = REPO_ROOT / "evaluation" / "fixtures"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-#: Built React app, when someone has run `pnpm build`. Optional.
-WEB_DIST = REPO_ROOT / "apps" / "web" / "dist"
 
 
 async def resolve_reasoner(settings) -> str:
@@ -243,21 +241,18 @@ def create_app() -> FastAPI:
     if FIXTURES_DIR.is_dir():
         app.mount("/fixtures", StaticFiles(directory=str(FIXTURES_DIR)), name="fixtures")
 
-    # The dashboard. The zero-build page in static/ needs no Node and is always available;
-    # a built React app takes precedence when present. Serving the UI from the API means
-    # "start the app" is one process, which is what the launcher depends on.
-    if WEB_DIST.is_dir():
-        app.mount("/app", StaticFiles(directory=str(WEB_DIST), html=True), name="web")
-
-        @app.get("/", include_in_schema=False)
-        async def root_built() -> RedirectResponse:
-            return RedirectResponse("/app/")
-
-    else:
-
-        @app.get("/", include_in_schema=False)
-        async def root() -> FileResponse:
-            return FileResponse(STATIC_DIR / "dashboard.html")
+    # The dashboard. One UI, served from here, needing no Node -- so "start the app" is one
+    # process, which is what the launcher depends on.
+    #
+    # There used to be a second one: a React app in apps/web that this would serve instead
+    # whenever `apps/web/dist` existed. It was deleted, and the branch with it. Two reasons.
+    # It had become a strict subset -- no Jobs board, no watched boards, no outcomes, no
+    # entry editor, no backup -- while calling endpoints whose shapes had since moved. And
+    # the swap was silent: running `pnpm build` once would have replaced a working dashboard
+    # with one missing most of the application, and nothing would have said why.
+    @app.get("/", include_in_schema=False)
+    async def root() -> FileResponse:
+        return FileResponse(STATIC_DIR / "dashboard.html")
 
     return app
 

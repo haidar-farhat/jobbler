@@ -17,7 +17,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('setup', 'up', 'down', 'api', 'web', 'test', 'unit', 'lint', 'seed',
+    [ValidateSet('setup', 'up', 'down', 'api', 'test', 'unit', 'lint', 'seed',
                  'migrate', 'status', 'psql', 'reset-runs')]
     [string]$Task = 'status',
 
@@ -105,17 +105,6 @@ switch ($Task) {
     'test'    { Assert-Venv; Invoke-Py (@('-m','pytest') + $Rest) -In $Root }
     'unit'    { Assert-Venv; Invoke-Py (@('-m','pytest','-m','not browser') + $Rest) -In $Root }
     'lint'    { Assert-Venv; Invoke-Py @('-m','ruff','check','localapply') }
-
-    'web' {
-        if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
-            throw "pnpm not found. Install Node 20 LTS, then run: corepack enable"
-        }
-        Push-Location (Join-Path $Root 'apps\web')
-        try {
-            if (-not (Test-Path 'node_modules')) { pnpm install }
-            pnpm dev
-        } finally { Pop-Location }
-    }
 
     'psql'       { docker exec -it localapply-postgres psql -U localapply -d localapply @Rest }
     'reset-runs' {

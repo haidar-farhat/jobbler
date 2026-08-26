@@ -180,8 +180,9 @@ through a form. The containers stay up, so the next start is quick.
 | `--show-token` | Print the API token. Needed once, to pair a phone. |
 | `--no-browser` · `--no-seed` | |
 
-**The dashboard needs no Node.** The API serves a zero-build Mission Control at `/` — the same
-status strip, live event stream, screenshots and approval cards, in one dependency-free file.
+**No Node, no build step, no bundler.** The API serves the dashboard at `/` as one
+dependency-free file. There was briefly a second React frontend; it is gone, because two
+UIs where one is a stale subset of the other is worse than either.
 
 ---
 
@@ -452,7 +453,6 @@ pretending to honour a file nothing reads.
 ## Layout
 
 ```
-apps/web/            React dashboard (optional; the zero-build one is served by the API)
 services/api/        FastAPI — contracts, browser, ai, policy, orchestrator, jobs, events, db
 launcher/            LocalApply.exe
 packages/            Shared agent-protocol schemas, generated from contracts.py
