@@ -9,7 +9,7 @@ and let a browser agent fill the forms — with you approving every consequentia
 
 Your data never leaves your machine. Nothing is ever submitted without you saying so.
 
-[![Tests](https://img.shields.io/badge/tests-651%20passing-3fb950?style=for-the-badge)](#tests)
+[![Tests](https://img.shields.io/badge/tests-667%20passing-3fb950?style=for-the-badge)](#tests)
 [![Python](https://img.shields.io/badge/python-3.14-3776ab?style=for-the-badge&logo=python&logoColor=white)](#requirements)
 [![Local first](https://img.shields.io/badge/cloud-none-58a6ff?style=for-the-badge)](#your-data)
 [![Dry run](https://img.shields.io/badge/DRY__RUN-on%20by%20default-d29922?style=for-the-badge)](#safety-properties)
@@ -348,6 +348,40 @@ support.
 </details>
 
 <details>
+<summary><b>👁 Letting the agent see</b> — off by default</summary>
+
+<br/>
+
+The observer walks the accessibility tree and hands the model a table. That works, and running
+it against real boards showed what it misses: **eleven of Greenhouse's seventy elements have no
+accessible name at all**, and its dropdowns are buttons with hidden inputs behind them. Eleven
+blank rows the model is asked to choose between.
+
+```bash
+LA_VISION=true
+LA_VISION_MODEL=qwen2.5vl:7b
+```
+
+**Sight is for perception; refs stay the only vocabulary for action.** The model may look at
+the page and must still answer with `e17`. It never emits a coordinate — a coordinate is
+unaddressable, unverifiable, and exactly what a prompt-injected page would try to induce. Both
+the parser and policy rule `R002` reject an action with no ref, and the tests pin both.
+
+**A page can write instructions in pixels**, so everything the fence does for page text is said
+about the image too: the model is told it is looking at a photograph of something a stranger
+controls.
+
+**One model does both jobs.** A separate vision model would mean swapping the 5 GB reasoner out
+and back on *every* observation — 3–10 s each, inside the loop. The router recognises that the
+two roles share a model name and skips the swap entirely. That is not a compromise; it is the
+only shape that fits on this card.
+
+With no vision model installed, or no screenshot for an observation, it takes the text path
+unchanged. Being blind is the old behaviour and is far better than refusing to decide.
+
+</details>
+
+<details>
 <summary><b>🧠 The AI engine, on 8 GB</b></summary>
 
 <br/>
@@ -360,7 +394,7 @@ real operational state, not a config echo.
 Model swaps cost 3–10 s and are treated as a scheduled orchestration cost.
 
 ```bash
-pytest              # 651 tests, no model needed
+pytest              # 667 tests, no model needed
 pytest -m ollama    # opt-in: live checks against a running Ollama
 pytest -m live      # opt-in: checks the real board APIs have not moved
 ```
@@ -380,7 +414,7 @@ Browser tests skip themselves if Chromium is missing. The suite runs on SQLite, 
 is required**.
 
 <details>
-<summary><b>What is covered</b> — 651 assertions, and why each exists</summary>
+<summary><b>What is covered</b> — 667 assertions, and why each exists</summary>
 
 <br/>
 
@@ -408,6 +442,7 @@ is required**.
 | `test_notify.py` | A notifier that raises does not reach the caller; a notification never carries a value |
 | `test_remote.py` | No token is a refusal, not a warning; keys come from the real `wg` binary or not at all |
 | `test_dashboard.py` | The script parses and binds, in a real browser; a job title written by a stranger is escaped, not rendered |
+| `test_seeing.py` | Seeing the page never becomes a way to act: a coordinate cannot be expressed, an unobserved ref is still rejected, and one model serving both roles never swaps |
 
 </details>
 
@@ -415,9 +450,8 @@ is required**.
 
 ## Not built yet
 
-The agent looking at the page rather than reading its accessibility tree · a phone app
-(deliberately cut — remote access already puts the dashboard on your phone) · anything that
-approves or applies on your behalf, ever.
+A phone app (deliberately cut — remote access already puts the dashboard on your phone) ·
+anything that approves or applies on your behalf, ever.
 
 <details>
 <summary><b>On real job sites</b> — the posture, and its limits</summary>
